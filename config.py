@@ -1,0 +1,13 @@
+import os
+
+SAMPLE_RATE = 16000
+WAKE_WORD = "Alfred"
+TERMINATION_PHRASE = "close script"
+CLEAR_CONTEXT_PHRASE = "clear context"
+TEMPERATURE = 0.5
+GOOGLE_API_KEY = "AIzaSyBazqONkVSYOjiDioBWl_kMuDE_zkwX-k0"
+GOOGLE_CSE_ID = "e2e1906518dcf49c3"
+WHISPER_MODEL_ID = "distil-whisper/distil-large-v3.5"
+
+WAKE_WORD_DURATION = 1.5
+COMMAND_DURATION = 10
