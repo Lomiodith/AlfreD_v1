@@ -1,23 +1,33 @@
+import os
 import sys
+import threading
+
 from audio_processor import AudioProcessor
+from config import *
+from conversation_handler import ConversationHandler
 from llm_service import LLMService
 from search_service import SearchService
-from conversation_handler import ConversationHandler
+from tts_service import TTSService
 from utils import clean_temp_audio
-from config import GOOGLE_API_KEY, GOOGLE_CSE_ID
+
+stop_event = threading.Event()
+
 
 def main():
     clean_temp_audio()
-    
+    tts_service = None
+
     try:
         audio_processor = AudioProcessor()
         llm_service = LLMService()
-        search_service = SearchService(GOOGLE_API_KEY, GOOGLE_CSE_ID)
-        conversation_handler = ConversationHandler(audio_processor, llm_service, search_service)
-        
-        while True:
+        search_service = SearchService()
+        tts_service = TTSService(default_voice="en-GB-RyanNeural")
+        conversation_handler = ConversationHandler(
+            audio_processor, llm_service, search_service, tts_service
+        )
+
+        while not stop_event.is_set():
             wake_word_detected = conversation_handler.process_wake_word_detection()
-            
             if wake_word_detected:
                 should_continue = conversation_handler.process_command()
                 if not should_continue:
@@ -27,12 +37,14 @@ def main():
         print("\n🛑 Script interrupted by user (Ctrl+C). Shutting down.")
     except Exception as e:
         print(f"Error initializing services: {e}")
-        sys.exit(1)
     finally:
         print("Performing final cleanup...")
+        if tts_service:
+            tts_service.shutdown()
         clean_temp_audio()
         print("Alfred is now offline. Goodbye, master!")
 
 
 if __name__ == "__main__":
     main()
+    os._exit(0)
