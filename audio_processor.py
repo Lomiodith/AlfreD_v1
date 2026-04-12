@@ -14,6 +14,9 @@ class AudioProcessor:
         if torch.cuda.is_available():
             self.device = "cuda"
             self.torch_dtype = torch.float16
+        elif torch.backends.mps.is_available():
+            self.device = "mps"
+            self.torch_dtype = torch.float16
         else:
             self.device = "cpu"
             self.torch_dtype = torch.float32

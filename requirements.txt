@@ -1,13 +1,31 @@
-httpx>=0.24.0
+# Core LLM / API
+groq>=0.11.0
+python-dotenv>=1.0.0
+
+# Audio capture & processing
 sounddevice>=0.4.6
-torch>=2.0.0
-groq>=0.4.0
-scipy>=1.10.0
-transformers>=4.30.0
+scipy>=1.11.0
+numpy>=1.26.0,<2.0.0
+
+# Speech recognition (Whisper)
+# NOTE: On Windows with NVIDIA GPU, install CUDA-enabled torch from:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+# The plain `torch` wheel below is CPU-only on Windows; on macOS it includes MPS support.
+torch>=2.2.0
+transformers>=4.44.0
+accelerate>=0.30.0
+safetensors>=0.4.0
+
+# TTS
+edge-tts>=7.0.0
+pygame>=2.5.0
+langdetect>=1.0.9
+
+# Web scraping & search
 requests>=2.31.0
 beautifulsoup4>=4.12.0
-numpy>=1.24.0
 ddgs>=9.0.0
-edge-tts>=7.0.0
-langdetect>=1.0.9
-pygame>=2.5.0
+
+# System tray (optional UI)
+pystray>=0.19.5
+Pillow>=10.0.0

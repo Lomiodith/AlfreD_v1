@@ -2,11 +2,12 @@ import re
 import time
 import traceback
 from typing import Dict, Optional, Tuple
-from config import GROQ_API_KEY
 
 from groq import Groq
+# import torch
+# from transformers import AutoModelForCausalLM, AutoProcessor
 
-from config import TEMPERATURE
+from config import TEMPERATURE, GROQ_API_KEY
 
 
 class LLMService:
@@ -14,10 +15,34 @@ class LLMService:
         self.client = Groq(api_key=GROQ_API_KEY)
         self.model = "openai/gpt-oss-120b"
         self.fallback_model = "llama-3.3-70b-versatile"
+
         self.max_retries = 2
         self.retry_delay = 1
 
-        print(f"🤖 LLM Service initialized with model: {self.model} (fallback: {self.fallback_model})")
+        print(f"🤖 LLM Service initialized with Groq model: {self.model}")
+
+        # --- Local Gemma 4 setup (disabled; re-enable on desktop if desired) ---
+        # self.MODEL_ID = "google/gemma-4-E4B-it"
+        # print(f"🤖 Loading local model: {self.MODEL_ID} ...")
+        #
+        # if torch.cuda.is_available():
+        #     self.device = torch.device("cuda")
+        #     dtype = torch.bfloat16
+        # elif torch.backends.mps.is_available():
+        #     self.device = torch.device("mps")
+        #     dtype = torch.float16
+        # else:
+        #     self.device = torch.device("cpu")
+        #     dtype = torch.float32
+        #
+        # self.processor = AutoProcessor.from_pretrained(self.MODEL_ID)
+        # self.model = AutoModelForCausalLM.from_pretrained(
+        #     self.MODEL_ID,
+        #     torch_dtype=dtype,
+        #     low_cpu_mem_usage=False,
+        # ).to(self.device)
+        # self.model.eval()
+        # print(f"🤖 LLM Service initialized with local model: {self.MODEL_ID}")
 
     def get_completion(self, messages):
         result = self._try_model_completion(messages, self.model)
@@ -30,13 +55,13 @@ class LLMService:
             return result
 
         print(f"❌ Both models failed after all retries")
-        return "I'm having trouble with the models. Please try again."
+        return "I'm having trouble with the model. Please try again."
 
     def _try_model_completion(self, messages, model_name):
         for attempt in range(self.max_retries):
             try:
                 if attempt > 0:
-                    print(f"🔄 Retry {attempt}/{self.max_retries - 1}...")
+                    print(f"🔄 Retry {attempt}/{self.max_retries - 1} on {model_name}...")
 
                 response = self.client.chat.completions.create(
                     model=model_name,
@@ -46,30 +71,15 @@ class LLMService:
                     tool_choice="none",
                 )
 
-                if (
-                    response
-                    and response.choices
-                    and len(response.choices) > 0
-                    and response.choices[0].message
-                ):
-
-                    message = response.choices[0].message
-
-                    if hasattr(message, "content") and message.content is not None:
-                        content = str(message.content).strip()
-                        if content:
-                            return content
-                        else:
-                            print(f"⚠️ Model returned empty content")
-                    else:
-                        print(f"⚠️ Model returned no content")
+                content = response.choices[0].message.content
+                if content:
+                    return content
                 else:
-                    print(f"⚠️ Model returned invalid response structure")
+                    print(f"⚠️ {model_name} returned empty content")
 
             except Exception as e:
-                print(f"❌ Attempt {attempt + 1} failed: {e}")
-                if "rate limit" not in str(e).lower() and "quota" not in str(e).lower():
-                    print(f"🔍 Exception details: {traceback.format_exc()}")
+                print(f"❌ Attempt {attempt + 1} on {model_name} failed: {e}")
+                print(f"🔍 Exception details: {traceback.format_exc()}")
 
                 if attempt < self.max_retries - 1:
                     time.sleep(self.retry_delay)
@@ -77,7 +87,6 @@ class LLMService:
         return None
 
     def get_completion_streaming(self, messages, on_sentence):
-        """Stream response from Groq, calling on_sentence() for each complete sentence."""
         result = self._try_streaming(messages, self.model, on_sentence)
         if result is not None:
             return result
@@ -87,8 +96,7 @@ class LLMService:
         if result is not None:
             return result
 
-        print(f"❌ Both models failed for streaming")
-        return self.get_completion(messages)
+        return None
 
     def _try_streaming(self, messages, model_name, on_sentence):
         try:

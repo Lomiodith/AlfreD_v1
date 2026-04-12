@@ -3,8 +3,51 @@ import asyncio
 import tempfile
 import os
 import re
-import msvcrt
+import sys
 import pygame
+
+if sys.platform == "win32":
+    import msvcrt
+
+    def _kbhit():
+        return msvcrt.kbhit()
+
+    def _getch():
+        return msvcrt.getch()
+
+    def _flush_input():
+        while msvcrt.kbhit():
+            msvcrt.getch()
+else:
+    import select
+    import termios
+    import tty
+
+    def _kbhit():
+        if not sys.stdin.isatty():
+            return False
+        dr, _, _ = select.select([sys.stdin], [], [], 0)
+        return bool(dr)
+
+    def _getch():
+        if not sys.stdin.isatty():
+            return b""
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            ch = sys.stdin.read(1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        return ch.encode() if isinstance(ch, str) else ch
+
+    def _flush_input():
+        if not sys.stdin.isatty():
+            return
+        try:
+            termios.tcflush(sys.stdin, termios.TCIFLUSH)
+        except Exception:
+            pass
 from langdetect import detect, LangDetectException
 
 VOICE_MAP = {
@@ -86,8 +129,7 @@ class TTSService:
 
     def reset(self):
         self.interrupted = False
-        while msvcrt.kbhit():
-            msvcrt.getch()
+        _flush_input()
 
     def shutdown(self):
         self.stop()
@@ -108,8 +150,8 @@ class TTSService:
         pygame.mixer.music.load(tmp_path)
         pygame.mixer.music.play()
         while pygame.mixer.music.get_busy():
-            if msvcrt.kbhit():
-                key = msvcrt.getch()
+            if _kbhit():
+                _getch()
                 self.stop()
                 print("\n⏹️ Speech interrupted.")
                 return
