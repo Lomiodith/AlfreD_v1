@@ -37,7 +37,7 @@ COMMAND_CATEGORIES = {
             }
         ]
     },
-    
+
     "search_commands": {
         "title": "🔍 Search Commands",
         "description": "Search the web and access information",
@@ -56,7 +56,7 @@ COMMAND_CATEGORIES = {
             }
         ]
     },
-    
+
     "system_commands": {
         "title": "💻 System Commands",
         "description": "Execute terminal/system commands safely",
@@ -81,7 +81,7 @@ COMMAND_CATEGORIES = {
             }
         ]
     },
-    
+
     "file_commands": {
         "title": "📁 File Operations",
         "description": "Read, write, and manage files and directories",
@@ -124,7 +124,7 @@ COMMAND_CATEGORIES = {
             }
         ]
     },
-    
+
     "web_commands": {
         "title": "🌐 Web Scraping",
         "description": "Extract content from websites",
@@ -149,7 +149,7 @@ COMMAND_CATEGORIES = {
             }
         ]
     },
-    
+
     "advanced_commands": {
         "title": "🧠 Advanced Features",
         "description": "Advanced AI capabilities and memory features",
@@ -186,7 +186,7 @@ COMMAND_CATEGORIES = {
             }
         ]
     },
-    
+
     "conversation_commands": {
         "title": "💬 Conversation Features",
         "description": "Natural conversation capabilities",
@@ -215,7 +215,7 @@ COMMAND_CATEGORIES = {
 
 SAFETY_NOTES = [
     "🛡️ System commands are automatically checked for safety",
-    "📁 File operations are restricted to safe directories in safe mode", 
+    "📁 File operations are restricted to safe directories in safe mode",
     "🌐 Web scraping only works with publicly accessible URLs",
     "⏱️ All operations have timeout protection (30 seconds for commands)",
     "💾 All interactions are automatically saved to memory for context"
@@ -238,74 +238,33 @@ def get_formatted_commands():
     output.append("🤖 ALFRED COMMAND REFERENCE")
     output.append("=" * 60)
     output.append("")
-    
+
     for category_key, category in COMMAND_CATEGORIES.items():
         output.append(f"{category['title']}")
         output.append("-" * len(category['title']))
         output.append(f"{category['description']}")
         output.append("")
-        
+
         for cmd in category['commands']:
             output.append(f"  Command: {cmd['command']}")
             output.append(f"  Description: {cmd['description']}")
             output.append(f"  Example: {cmd['example']}")
             output.append("")
-    
+
     output.append("🛡️ SAFETY & LIMITATIONS")
     output.append("-" * 25)
     for note in SAFETY_NOTES:
         output.append(f"  {note}")
     output.append("")
-    
+
     output.append("💡 TIPS & TRICKS")
     output.append("-" * 15)
     for tip in TIPS_AND_TRICKS:
         output.append(f"  {tip}")
     output.append("")
-    
+
     output.append("=" * 60)
     output.append("Say 'Alfred, [command]' to use any command above!")
     output.append("=" * 60)
-    
+
     return "\n".join(output)
-
-def get_quick_help():
-    """Return a quick help summary."""
-    return """
-🤖 ALFRED QUICK HELP
-━━━━━━━━━━━━━━━━━━━━━━━
-
-Essential Commands:
-• "Alfred" - Wake word to activate
-• "close script" - Shut down Alfred  
-• "clear context" - Clear conversation history
-• "show commands" - Full command reference
-
-Quick Examples:
-• "search for python tutorials"
-• "run command ls -la"
-• "read file config.py"
-• "scrape https://news.com"
-• "what's the weather like show thinking"
-
-Say "show commands" for the complete reference!
-"""
-
-def search_commands(query):
-    """Search for commands matching a query."""
-    query_lower = query.lower()
-    matching_commands = []
-    
-    for category_key, category in COMMAND_CATEGORIES.items():
-        for cmd in category['commands']:
-            if (query_lower in cmd['command'].lower() or 
-                query_lower in cmd['description'].lower() or
-                query_lower in cmd['category'].lower()):
-                matching_commands.append({
-                    'category': category['title'],
-                    'command': cmd['command'],
-                    'description': cmd['description'],
-                    'example': cmd['example']
-                })
-    
-    return matching_commands

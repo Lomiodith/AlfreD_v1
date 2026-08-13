@@ -1,10 +1,11 @@
 import sys
-import os
 import threading
+from pathlib import Path
+
 import pystray
 from PIL import Image
-from AlfreD_v1 import main as alfred_main
-from pathlib import Path
+
+from AlfreD_v1 import main as alfred_main, stop_event
 
 
 def get_base_path():
@@ -26,7 +27,6 @@ class AlfredTray:
     def start_alfred(self, icon, item):
         if self.running:
             return
-        from AlfreD_v1 import stop_event
         stop_event.clear()
         self.running = True
         self.alfred_thread = threading.Thread(target=self._run_alfred, daemon=True)
@@ -36,7 +36,6 @@ class AlfredTray:
     def stop_alfred(self, icon=None, item=None):
         if not self.running:
             return
-        from AlfreD_v1 import stop_event
         stop_event.set()
         if self.alfred_thread and self.alfred_thread.is_alive():
             self.alfred_thread.join(timeout=5)

@@ -1,10 +1,12 @@
-import edge_tts
 import asyncio
-import tempfile
 import os
 import re
 import sys
+import tempfile
+
+import edge_tts
 import pygame
+from langdetect import detect, LangDetectException
 
 if sys.platform == "win32":
     import msvcrt
@@ -48,7 +50,6 @@ else:
             termios.tcflush(sys.stdin, termios.TCIFLUSH)
         except Exception:
             pass
-from langdetect import detect, LangDetectException
 
 VOICE_MAP = {
     "en": "en-GB-RyanNeural",
@@ -70,6 +71,32 @@ VOICE_MAP = {
     "hi": "hi-IN-MadhurNeural",
 }
 
+# Applied in order to every streamed sentence, so they are compiled once.
+SPEECH_SUBSTITUTIONS = [
+    (re.compile(r"\*\*(.+?)\*\*"), r"\1"),                     # **bold**
+    (re.compile(r"\*(.+?)\*"), r"\1"),                         # *italic*
+    (re.compile(r"#{1,6}\s*"), ""),                             # ### headings
+    (re.compile(r"`(.+?)`"), r"\1"),                            # `code`
+    (re.compile(r"^\s*[-\u2022]\s*", re.MULTILINE), ""),        # bullet points
+    (re.compile(r"\[(.+?)\]\(.+?\)"), r"\1"),                   # [link](url)
+    (re.compile(r"https?://\S+"), ""),                          # bare URLs
+    (re.compile(r"\|"), " "),                                   # table pipes
+    (re.compile(r"-{3,}"), ""),                                 # table separators
+    (re.compile(r"^\s*\d+\s*$", re.MULTILINE), ""),             # lone row numbers
+    (re.compile(r"[*_~`]"), ""),                                # leftover markdown
+    (re.compile(r"\s{2,}"), " "),                               # collapse whitespace
+]
+
+# Curly quotes confuse the voice; fold them onto their ASCII equivalents.
+QUOTE_TRANSLATION = str.maketrans({
+    "\u201e": '"', "\u201c": '"', "\u201d": '"',
+    "\u2018": "'", "\u2019": "'",
+})
+
+NON_LETTERS = re.compile(
+    r"[^a-zA-Z\u00C0-\u024F\u0400-\u04FF\u4e00-\u9fff\uac00-\ud7af]"
+)
+
 
 class TTSService:
     def __init__(self, default_voice="en-GB-RyanNeural"):
@@ -88,24 +115,12 @@ class TTSService:
             return self.default_voice
 
     def _clean_for_speech(self, text):
-        text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)           # **bold**
-        text = re.sub(r'\*(.+?)\*', r'\1', text)               # *italic*
-        text = re.sub(r'#{1,6}\s*', '', text)                   # ### headings
-        text = re.sub(r'`(.+?)`', r'\1', text)                  # `code`
-        text = re.sub(r'^\s*[-•]\s*', '', text, flags=re.MULTILINE)  # - bullet points
-        text = re.sub(r'\[(.+?)\]\(.+?\)', r'\1', text)         # [link](url)
-        text = re.sub(r'https?://\S+', '', text)                # bare URLs
-        text = re.sub(r'\|', ' ', text)                         # table pipes
-        text = re.sub(r'-{3,}', '', text)                       # table separators ---
-        text = re.sub(r'^\s*\d+\s*$', '', text, flags=re.MULTILINE)  # lone numbers (table row indices)
-        text = re.sub(r'[*_~`]', '', text)                      # leftover markdown symbols
-        text = text.replace('„', '"').replace('"', '"').replace('"', '"')  # normalize quotes
-        text = re.sub(r'\s{2,}', ' ', text)                     # collapse whitespace
-        return text.strip()
+        for pattern, replacement in SPEECH_SUBSTITUTIONS:
+            text = pattern.sub(replacement, text)
+        return text.translate(QUOTE_TRANSLATION).strip()
 
     def _is_speakable(self, text):
-        stripped = re.sub(r'[^a-zA-Z\u00C0-\u024F\u0400-\u04FF\u4e00-\u9fff\uac00-\ud7af]', '', text)
-        return len(stripped) >= 2
+        return len(NON_LETTERS.sub("", text)) >= 2
 
     def speak(self, text):
         if not text or not text.strip() or self.interrupted:

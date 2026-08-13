@@ -1,17 +1,33 @@
-from config import (
-    WAKE_WORD,
-    TERMINATION_PHRASE,
-    CLEAR_CONTEXT_PHRASE,
-    WAKE_WORD_DURATION,
-    COMMAND_DURATION,
-)
-from memory_manager import MemoryManager
-from tool_manager import ToolManager
-from commands import get_formatted_commands, search_commands
-from intent_detector import IntentDetector
-from performance_monitor import performance_monitor
-from typing import List, Dict, Any
 import time
+from typing import Any, Dict, List
+
+from commands import get_formatted_commands
+from config import WAKE_WORD, WAKE_WORD_DURATION
+from intent_detector import IntentDetector
+from memory_manager import MemoryManager
+from performance_monitor import performance_monitor
+from tool_manager import ToolManager
+
+SYSTEM_PROMPT = """You are Alfred, a helpful voice assistant. Answer the user's questions directly and conversationally. Use information from previous interactions for context.
+
+Important: Always respond with a direct answer. Never attempt to call tools, functions, or commands. Never output structured/JSON responses. Just speak naturally to the user.
+
+If the user asks you to search, the search results will be provided to you as system messages — just summarize them for the user."""
+
+SUMMARY_PROMPT = """Please summarize the following conversation, focusing on:
+1. Key topics discussed
+2. Important information shared
+3. User preferences or patterns observed
+4. Any ongoing tasks or commitments
+
+Conversation:
+{conversation}
+
+Provide a concise summary that preserves the essential context for future interactions."""
+
+
+def _truncate(text: str, limit: int) -> str:
+    return text[:limit] + "..." if len(text) > limit else text
 
 
 class ConversationHandler:
@@ -29,12 +45,7 @@ class ConversationHandler:
         self._memory_search_cache_time = 60
 
     def _initialize_conversation_history(self):
-        system_prompt = """You are Alfred, a helpful voice assistant. Answer the user's questions directly and conversationally. Use information from previous interactions for context.
-
-Important: Always respond with a direct answer. Never attempt to call tools, functions, or commands. Never output structured/JSON responses. Just speak naturally to the user.
-
-If the user asks you to search, the search results will be provided to you as system messages — just summarize them for the user."""
-        return [{"role": "system", "content": system_prompt}]
+        return [{"role": "system", "content": SYSTEM_PROMPT}]
 
     def detect_wake_word(self, transcript):
         return WAKE_WORD.lower() in transcript.lower()
@@ -51,11 +62,10 @@ If the user asks you to search, the search results will be provided to you as sy
             self.audio_processor.record_audio(temp_wake_path, WAKE_WORD_DURATION)
             transcript = self.audio_processor.transcribe_audio(temp_wake_path)
 
+            result = False
             if transcript and transcript.strip():
                 print(f'Heard: "{transcript}"')
                 result = self.detect_wake_word(transcript)
-            else:
-                result = False
 
             performance_monitor.end_operation(op_id, success=True)
             return result
@@ -81,12 +91,12 @@ If the user asks you to search, the search results will be provided to you as sy
             self.audio_processor.record_until_silence(temp_cmd_path)
             command_text = self.audio_processor.transcribe_audio(temp_cmd_path)
 
-            if command_text.strip():
-                print(f'Command heard: "{command_text}"')
-                return self._handle_command(command_text)
-            else:
+            if not command_text.strip():
                 print("🤷 Command was empty or just silence.")
                 return True
+
+            print(f'Command heard: "{command_text}"')
+            return self._handle_command(command_text)
 
         except Exception as e:
             print(f"Error during command processing: {e}")
@@ -107,36 +117,31 @@ If the user asks you to search, the search results will be provided to you as sy
             return True
 
         if intent == "show_commands":
-            return self._handle_show_commands()
+            print("📋 Displaying command reference...")
+            print("\n" + get_formatted_commands())
+            return True
 
         if intent == "performance":
             performance_monitor.print_stats()
             return True
 
         if intent == "search":
-            return self._handle_search_command(command_text)
+            return self._handle_search_command(command_text, query)
 
         if intent == "system_command":
-            return self._handle_system_command(command_text)
+            return self._handle_system_command(command_text, query)
 
         if intent in ("read_file", "write_file"):
-            return self._handle_file_operation(command_text)
+            return self._handle_file_operation(command_text, intent, query)
 
         if intent == "scrape":
-            return self._handle_web_scraping(command_text)
+            return self._handle_web_scraping(command_text, query)
 
-        show_thinking = "show thinking" in command_text.lower()
-        return self._handle_general_command(command_text, show_thinking)
+        return self._dispatch_command(command_text)
 
-    def _dispatch_command(
-        self,
-        command_text,
-        system_message=None,
-        show_thinking=False,
-        memory_context=None,
-    ):
-        """Shared logic: summarize context, inject system message, stream LLM response with TTS."""
-        self.auto_summarize_context(self.max_context_tokens)
+    def _dispatch_command(self, command_text, system_message=None, memory_context=None):
+        """Summarize context, inject system message, stream the LLM response with TTS."""
+        self.auto_summarize_context()
 
         relevant_context = self.get_relevant_context(command_text)
         if relevant_context:
@@ -168,60 +173,29 @@ If the user asks you to search, the search results will be provided to you as sy
             self.conversation_history.append(
                 {"role": "assistant", "content": full_response}
             )
-            self._store_interaction_memory(
-                user_input=command_text,
-                assistant_response=full_response[:500],
-                context=memory_context,
-            )
-        else:
-            if (
-                self.conversation_history
-                and self.conversation_history[-1]["role"] == "user"
-            ):
-                self.conversation_history.pop()
+            self._store_interaction_memory(command_text, full_response, memory_context)
+        elif self.conversation_history[-1]["role"] == "user":
+            self.conversation_history.pop()
 
         return True
 
-    def _handle_show_commands(self):
-        print("📋 Displaying command reference...")
-        print("\n" + get_formatted_commands())
-        return True
+    @staticmethod
+    def _tool_system_message(label, fields, result, success_summary):
+        """Build the system message describing a tool result for the LLM."""
+        lines = [f"{label} result:"]
+        lines += [f"{name}: {value}" for name, value in fields.items()]
+        lines.append(f"Success: {result['success']}")
+        lines.append(
+            success_summary(result) if result["success"] else f"Error: {result['error']}"
+        )
+        return "\n".join(lines)
 
-    def _handle_search_commands(self, command_text):
-        query = command_text[len("search commands ") :].strip()
-        print(f"🔍 Searching commands for: {query}")
-
-        matching_commands = search_commands(query)
-
-        if matching_commands:
-            print(f"\n📋 Found {len(matching_commands)} matching commands:")
-            print("=" * 50)
-
-            for cmd in matching_commands:
-                print(f"\n{cmd['category']}")
-                print(f"Command: {cmd['command']}")
-                print(f"Description: {cmd['description']}")
-                print(f"Example: {cmd['example']}")
-                print("-" * 30)
-        else:
-            print(f"❌ No commands found matching '{query}'")
-            print("\n💡 Try 'show commands' for the full reference")
-
-        return True
-
-    def _handle_search_command(self, command_text):
-        query = command_text[len("search for ") :].strip()
+    def _handle_search_command(self, command_text, query):
         print(f"🔎 Searching for: {query}")
 
         op_id = performance_monitor.start_operation("search_command")
 
         try:
-            normalized_command = command_text.lower().strip()
-            show_thinking = (
-                "show thinking" in normalized_command
-                or "show thoughts" in normalized_command
-            )
-
             search_system_msg = None
             search_results = self.search_service.multi_source_search(
                 query, num_results=10
@@ -234,77 +208,162 @@ If the user asks you to search, the search results will be provided to you as sy
             self._dispatch_command(
                 command_text,
                 system_message=search_system_msg,
-                show_thinking=show_thinking,
                 memory_context={"search_performed": True, "search_query": query},
             )
 
             performance_monitor.end_operation(op_id, success=True)
-            return True
 
         except Exception as e:
             performance_monitor.end_operation(
                 op_id, success=False, details={"error": str(e)}
             )
             print(f"Error in search command: {e}")
+
+        return True
+
+    def _handle_system_command(self, command_text, command):
+        print(f"💻 Executing command: {command}")
+
+        result = self.tool_manager.execute_system_commands(command, safety_check=True)
+
+        return self._dispatch_command(
+            command_text,
+            system_message=self._tool_system_message(
+                "Command execution",
+                {"Command": command},
+                result,
+                lambda r: f"Output: {r['output']}",
+            ),
+            memory_context={"tool_used": "system_command", "command": command},
+        )
+
+    def _handle_file_operation(self, command_text, intent, query):
+        content = None
+        if intent == "write_file":
+            action = "write"
+            path, _, content = query.partition(" with content ")
+            path = path.strip()
+        else:
+            action = "read"
+            path = query.strip()
+
+        if not path:
+            print("❌ No file path given")
             return True
 
-    def _handle_general_command(self, command_text, show_thinking=False):
-        return self._dispatch_command(command_text, show_thinking=show_thinking)
+        print(f"📁 File operation: {action} on {path}")
 
-    def clear_context(self):
-        self.conversation_history = self._initialize_conversation_history()
+        result = self.tool_manager.file_operations(action, path, content)
 
-    def auto_summarize_context(self, token_limit: int = 4000) -> bool:
+        def summarize(r):
+            if "content" in r:
+                return f"Content: {_truncate(r['content'], 500)}"
+            if "items" in r:
+                return f"Items found: {len(r['items'])}"
+            return f"Result: {r.get('message', 'Operation completed')}"
+
+        return self._dispatch_command(
+            command_text,
+            system_message=self._tool_system_message(
+                "File operation", {"Action": action, "Path": path}, result, summarize
+            ),
+            memory_context={
+                "tool_used": "file_operation",
+                "action": action,
+                "path": path,
+            },
+        )
+
+    def _handle_web_scraping(self, command_text, query):
+        url, _, extract_type = query.partition(" for ")
+        url = url.strip()
+        extract_type = extract_type.strip() or "text"
+
+        if not url:
+            print("❌ No URL given to scrape")
+            return True
+
+        print(f"🌐 Scraping {url} for {extract_type}")
+
+        result = self.tool_manager.web_scraping(url, extract_type)
+
+        def summarize(r):
+            if "text" in r:
+                return f"Text content: {_truncate(r['text'], 1000)}"
+            if "links" in r:
+                return f"Found {len(r['links'])} links"
+            if "images" in r:
+                return f"Found {len(r['images'])} images"
+            return "Content extracted successfully"
+
+        return self._dispatch_command(
+            command_text,
+            system_message=self._tool_system_message(
+                "Web scraping",
+                {"URL": url, "Extract type": extract_type},
+                result,
+                summarize,
+            ),
+            memory_context={
+                "tool_used": "web_scraping",
+                "url": url,
+                "extract_type": extract_type,
+            },
+        )
+
+    def auto_summarize_context(self) -> bool:
         try:
-            estimated_tokens = self._estimate_token_count(self.conversation_history)
-
-            if estimated_tokens <= token_limit:
+            if self._estimate_token_count(self.conversation_history) <= self.max_context_tokens:
                 return False
 
             print("🧠 Context approaching limit, summarizing older conversations...")
 
-            system_messages = []
-            non_system_messages = []
-            for msg in self.conversation_history:
-                if msg["role"] == "system":
-                    system_messages.append(msg)
-                else:
-                    non_system_messages.append(msg)
+            system_messages = [
+                m for m in self.conversation_history if m["role"] == "system"
+            ]
+            other_messages = [
+                m for m in self.conversation_history if m["role"] != "system"
+            ]
 
-            recent_messages = non_system_messages[-10:]
-            older_messages = non_system_messages[:-10]
+            recent_messages = other_messages[-10:]
+            older_messages = other_messages[:-10]
 
             if not older_messages:
                 return False
 
-            summary_prompt = self._create_summary_prompt(older_messages)
-            summary_messages = [{"role": "user", "content": summary_prompt}]
+            conversation = "\n".join(
+                f"{m['role'].title()}: {m['content']}" for m in older_messages
+            )
+            summary = self.llm_service.get_completion(
+                [{"role": "user", "content": SUMMARY_PROMPT.format(conversation=conversation)}]
+            )
 
-            summary_response = self.llm_service.get_completion(summary_messages)
+            if not summary:
+                return False
 
-            if summary_response:
-                summary_message = {
-                    "role": "system",
-                    "content": f"Previous conversation summary: {summary_response}",
-                }
+            self.conversation_history = (
+                system_messages
+                + [
+                    {
+                        "role": "system",
+                        "content": f"Previous conversation summary: {summary}",
+                    }
+                ]
+                + recent_messages
+            )
 
-                self.conversation_history = (
-                    system_messages + [summary_message] + recent_messages
-                )
+            self.memory_manager.episodic_memory(
+                event_type="context_summarization",
+                content=summary,
+                context={"original_messages_count": len(older_messages)},
+            )
 
-                self.memory_manager.episodic_memory(
-                    event_type="context_summarization",
-                    content=summary_response,
-                    context={"original_messages_count": len(older_messages)},
-                )
-
-                print(f"✅ Summarized {len(older_messages)} older messages")
-                return True
+            print(f"✅ Summarized {len(older_messages)} older messages")
+            return True
 
         except Exception as e:
             print(f"Error during context summarization: {e}")
-
-        return False
+            return False
 
     def semantic_memory_search(
         self, query: str, limit: int = 5
@@ -313,43 +372,33 @@ If the user asks you to search, the search results will be provided to you as sy
             cache_key = f"{query}_{limit}"
             current_time = time.time()
 
-            if (
-                cache_key in self._last_memory_search
-                and current_time - self._last_memory_search[cache_key]["time"]
-                < self._memory_search_cache_time
-            ):
-                return self._last_memory_search[cache_key]["results"]
-
-            memories = self.memory_manager.recall_episodic_memories(limit=20)
-
-            if not memories:
-                return []
+            cached = self._last_memory_search.get(cache_key)
+            if cached and current_time - cached["time"] < self._memory_search_cache_time:
+                return cached["results"]
 
             query_words = set(query.lower().split())
             if not query_words:
                 return []
 
-            relevant_memories = []
+            memories = self.memory_manager.recall_episodic_memories(limit=20)
 
+            scored = []
             for memory in memories:
-                content_words = set(memory.content.lower().split()[:50])
-                user_input_words = set(memory.user_input.lower().split()[:20])
+                words = {w.lower() for w in memory.content.split()[:50]}
+                words |= {w.lower() for w in memory.user_input.split()[:20]}
 
-                all_words = content_words | user_input_words
-                overlap = len(query_words & all_words)
-
-                if overlap > 0:
-                    relevance_score = overlap / len(query_words)
-                    relevant_memories.append(
+                overlap = len(query_words & words)
+                if overlap:
+                    scored.append(
                         {
                             "memory": memory,
-                            "relevance_score": relevance_score,
+                            "relevance_score": overlap / len(query_words),
                             "word_overlap": overlap,
                         }
                     )
 
-            relevant_memories.sort(key=lambda x: x["relevance_score"], reverse=True)
-            results = relevant_memories[:limit]
+            scored.sort(key=lambda x: x["relevance_score"], reverse=True)
+            results = scored[:limit]
 
             # Evict oldest entry instead of clearing entire cache
             if len(self._last_memory_search) > 100:
@@ -370,45 +419,21 @@ If the user asks you to search, the search results will be provided to you as sy
             return []
 
     def _estimate_token_count(self, messages: List[Dict[str, str]]) -> int:
-        total_chars = sum(len(msg.get("content", "")) for msg in messages)
-        return int(total_chars / 4)
-
-    def _create_summary_prompt(self, messages: List[Dict[str, str]]) -> str:
-        conversation_text = "\n".join(
-            [f"{msg['role'].title()}: {msg['content']}" for msg in messages]
-        )
-
-        return f"""Please summarize the following conversation, focusing on:
-1. Key topics discussed
-2. Important information shared
-3. User preferences or patterns observed
-4. Any ongoing tasks or commitments
-
-Conversation:
-{conversation_text}
-
-Provide a concise summary that preserves the essential context for future interactions."""
+        return sum(len(msg.get("content", "")) for msg in messages) // 4
 
     def _store_interaction_memory(
-        self,
-        user_input: str,
-        assistant_response: str,
-        search_performed: bool = False,
-        search_query: str = "",
-        context: Dict = None,
+        self, user_input: str, assistant_response: str, context: Dict = None
     ):
         try:
             truncated_response = assistant_response[:500]
             interaction_data = {
                 "user_input": user_input,
                 "assistant_response": truncated_response,
-                "search_performed": search_performed,
-                "search_query": search_query,
+                "search_performed": False,
+                "search_query": "",
                 "timestamp": time.time(),
+                **(context or {}),
             }
-
-            if context:
-                interaction_data.update(context)
 
             self.memory_manager.episodic_memory(
                 event_type="conversation_interaction",
@@ -428,130 +453,15 @@ Provide a concise summary that preserves the essential context for future intera
             if len(query.split()) < 2:
                 return ""
 
-            relevant_memories = self.semantic_memory_search(query, limit=2)
+            context_parts = [
+                f"Previous: {m['memory'].user_input[:100]} -> "
+                f"{m['memory'].assistant_response[:150]}"
+                for m in self.semantic_memory_search(query, limit=2)
+                if m["relevance_score"] > 0.3
+            ]
 
-            if not relevant_memories:
-                return ""
-
-            context_parts = []
-            for mem_data in relevant_memories:
-                memory = mem_data["memory"]
-                if mem_data["relevance_score"] > 0.3:
-                    context_parts.append(
-                        f"Previous: {memory.user_input[:100]} -> {memory.assistant_response[:150]}"
-                    )
-
-            if context_parts:
-                return "Context: " + " | ".join(context_parts)
-            return ""
+            return "Context: " + " | ".join(context_parts) if context_parts else ""
 
         except Exception as e:
             print(f"Error getting relevant context: {e}")
             return ""
-
-    def _handle_system_command(self, command_text):
-        command = command_text[len("run command ") :].strip()
-        print(f"💻 Executing command: {command}")
-
-        result = self.tool_manager.execute_system_commands(command, safety_check=True)
-
-        system_message = f"Command execution result:\nCommand: {command}\nSuccess: {result['success']}\n"
-        if result["success"]:
-            system_message += f"Output: {result['output']}"
-        else:
-            system_message += f"Error: {result['error']}"
-
-        return self._dispatch_command(
-            command_text,
-            system_message=system_message,
-            memory_context={"tool_used": "system_command", "command": command},
-        )
-
-    def _handle_file_operation(self, command_text):
-        normalized = command_text.lower().strip()
-        content = None
-
-        if normalized.startswith("read file "):
-            path = command_text[len("read file ") :].strip()
-            action = "read"
-        elif normalized.startswith("write file "):
-            parts = (
-                command_text[len("write file ") :].strip().split(" with content ", 1)
-            )
-            path = parts[0]
-            content = parts[1] if len(parts) > 1 else ""
-            action = "write"
-        elif normalized.startswith("file "):
-            parts = command_text[len("file ") :].strip().split(" ", 1)
-            action = parts[0] if parts else "list"
-            path = parts[1] if len(parts) > 1 else "."
-        else:
-            print("❌ Invalid file operation format")
-            return True
-
-        print(f"📁 File operation: {action} on {path}")
-
-        result = self.tool_manager.file_operations(action, path, content)
-
-        system_message = f"File operation result:\nAction: {action}\nPath: {path}\nSuccess: {result['success']}\n"
-        if result["success"]:
-            if "content" in result:
-                system_message += f"Content: {result['content'][:500]}{'...' if len(result['content']) > 500 else ''}"
-            elif "items" in result:
-                system_message += f"Items found: {len(result['items'])}"
-            else:
-                system_message += (
-                    f"Result: {result.get('message', 'Operation completed')}"
-                )
-        else:
-            system_message += f"Error: {result['error']}"
-
-        return self._dispatch_command(
-            command_text,
-            system_message=system_message,
-            memory_context={
-                "tool_used": "file_operation",
-                "action": action,
-                "path": path,
-            },
-        )
-
-    def _handle_web_scraping(self, command_text):
-        normalized = command_text.lower().strip()
-
-        for prefix in ("web scrape ", "scrape "):
-            if normalized.startswith(prefix):
-                parts = command_text[len(prefix) :].strip().split(" for ", 1)
-                url = parts[0]
-                extract_type = parts[1] if len(parts) > 1 else "text"
-                break
-        else:
-            print("❌ Invalid web scraping format")
-            return True
-
-        print(f"🌐 Scraping {url} for {extract_type}")
-
-        result = self.tool_manager.web_scraping(url, extract_type)
-
-        system_message = f"Web scraping result:\nURL: {url}\nExtract type: {extract_type}\nSuccess: {result['success']}\n"
-        if result["success"]:
-            if "text" in result:
-                system_message += f"Text content: {result['text'][:1000]}{'...' if len(result['text']) > 1000 else ''}"
-            elif "links" in result:
-                system_message += f"Found {len(result['links'])} links"
-            elif "images" in result:
-                system_message += f"Found {len(result['images'])} images"
-            else:
-                system_message += f"Content extracted successfully"
-        else:
-            system_message += f"Error: {result['error']}"
-
-        return self._dispatch_command(
-            command_text,
-            system_message=system_message,
-            memory_context={
-                "tool_used": "web_scraping",
-                "url": url,
-                "extract_type": extract_type,
-            },
-        )

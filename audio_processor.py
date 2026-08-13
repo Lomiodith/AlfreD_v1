@@ -32,12 +32,13 @@ class AudioProcessor:
         self._initialize_model()
 
     def _suppress_warnings(self):
-        warnings.filterwarnings("ignore", category=FutureWarning)
-        warnings.filterwarnings("ignore", category=UserWarning)
-        warnings.filterwarnings("ignore", message=".*return_token_timestamps.*")
-        warnings.filterwarnings("ignore", message=".*chunk_length_s.*")
-        warnings.filterwarnings("ignore", message=".*experimental.*")
-        warnings.filterwarnings("ignore", message=".*forced_decoder_ids.*")
+        for category in (FutureWarning, UserWarning):
+            warnings.filterwarnings("ignore", category=category)
+        for message in (
+            "return_token_timestamps", "chunk_length_s",
+            "experimental", "forced_decoder_ids",
+        ):
+            warnings.filterwarnings("ignore", message=f".*{message}.*")
 
     def record_until_silence(self, filename, max_duration=20, silence_threshold=2.0):
         """Record audio until user stops talking.
@@ -53,32 +54,26 @@ class AudioProcessor:
         silent_chunks_needed = int(silence_threshold * SAMPLE_RATE / chunk_size)
         max_chunks = int(max_duration * SAMPLE_RATE / chunk_size)
 
-        stream = sd.InputStream(
+        with sd.InputStream(
             samplerate=SAMPLE_RATE, channels=1, dtype="float32", blocksize=chunk_size
-        )
+        ) as stream:
+            for _ in range(max_chunks):
+                audio_chunk, _ = stream.read(chunk_size)
+                chunks.append(audio_chunk.copy())
 
-        stream.start()
+                tensor = torch.from_numpy(audio_chunk.flatten())
+                speech_prob = self.vad_model(tensor, SAMPLE_RATE).item()
 
-        for _ in range(max_chunks):
-            audio_chunk, _ = stream.read(chunk_size)
-            chunks.append(audio_chunk.copy())
+                if speech_prob < 0.5:
+                    silent_chunks += 1
+                else:
+                    silent_chunks = 0
 
-            tensor = torch.from_numpy(audio_chunk.flatten())
-            speech_prob = self.vad_model(tensor, SAMPLE_RATE).item()
-
-            if speech_prob < 0.5:
-                silent_chunks += 1
-            else:
-                silent_chunks = 0
-
-            if (
-                silent_chunks >= silent_chunks_needed
-                and len(chunks) > silent_chunks_needed
-            ):
-                break
-
-        stream.stop()
-        stream.close()
+                if (
+                    silent_chunks >= silent_chunks_needed
+                    and len(chunks) > silent_chunks_needed
+                ):
+                    break
 
         audio = np.concatenate(chunks)
         audio_int16 = (audio * 32767).astype(np.int16)

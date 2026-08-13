@@ -1,9 +1,7 @@
 import os
-import sys
 import threading
 
 from audio_processor import AudioProcessor
-from config import *
 from conversation_handler import ConversationHandler
 from llm_service import LLMService
 from search_service import SearchService
