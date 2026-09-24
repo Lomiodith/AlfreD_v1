@@ -7,6 +7,7 @@ from intent_detector import IntentDetector
 from memory_manager import MemoryManager
 from performance_monitor import performance_monitor
 from tool_manager import ToolManager
+from utils import stop_event
 
 SYSTEM_PROMPT = """You are Alfred, a helpful voice assistant. Answer the user's questions directly and conversationally. Use information from previous interactions for context.
 
@@ -25,9 +26,22 @@ Conversation:
 
 Provide a concise summary that preserves the essential context for future interactions."""
 
+MAX_CONTEXT_TOKENS = 4000
+RECENT_MESSAGES_KEPT = 10
+MEMORY_SEARCH_CACHE_SECONDS = 60
+MEMORY_SEARCH_CACHE_SIZE = 100
+
 
 def _truncate(text: str, limit: int) -> str:
     return text[:limit] + "..." if len(text) > limit else text
+
+
+def _estimate_token_count(messages: List[Dict[str, str]]) -> int:
+    return sum(len(msg.get("content", "")) for msg in messages) // 4
+
+
+def _fresh_history():
+    return [{"role": "system", "content": SYSTEM_PROMPT}]
 
 
 class ConversationHandler:
@@ -39,13 +53,8 @@ class ConversationHandler:
         self.memory_manager = MemoryManager()
         self.tool_manager = ToolManager(safe_mode=True)
         self.intent_detector = IntentDetector()
-        self.conversation_history = self._initialize_conversation_history()
-        self.max_context_tokens = 4000
-        self._last_memory_search = {}
-        self._memory_search_cache_time = 60
-
-    def _initialize_conversation_history(self):
-        return [{"role": "system", "content": SYSTEM_PROMPT}]
+        self.conversation_history = _fresh_history()
+        self._memory_search_cache = {}
 
     def detect_wake_word(self, transcript):
         return WAKE_WORD.lower() in transcript.lower()
@@ -60,6 +69,9 @@ class ConversationHandler:
                 temp_wake_path = tmpfile.name
 
             self.audio_processor.record_audio(temp_wake_path, WAKE_WORD_DURATION)
+            if stop_event.is_set():
+                performance_monitor.end_operation(op_id, success=True)
+                return False
             transcript = self.audio_processor.transcribe_audio(temp_wake_path)
 
             result = False
@@ -77,8 +89,7 @@ class ConversationHandler:
             )
             return False
         finally:
-            if temp_wake_path:
-                self.audio_processor.cleanup_temp_file(temp_wake_path)
+            self.audio_processor.cleanup_temp_file(temp_wake_path)
 
     def process_command(self):
         print("✅ Wake word detected! Listening for command...")
@@ -89,6 +100,8 @@ class ConversationHandler:
                 temp_cmd_path = cmdfile.name
 
             self.audio_processor.record_until_silence(temp_cmd_path)
+            if stop_event.is_set():
+                return False
             command_text = self.audio_processor.transcribe_audio(temp_cmd_path)
 
             if not command_text.strip():
@@ -113,7 +126,7 @@ class ConversationHandler:
 
         if intent == "clear_context":
             print("🧠 Context cleared. Starting fresh conversation.")
-            self.conversation_history = self._initialize_conversation_history()
+            self.conversation_history = _fresh_history()
             return True
 
         if intent == "show_commands":
@@ -140,21 +153,16 @@ class ConversationHandler:
         return self._dispatch_command(command_text)
 
     def _dispatch_command(self, command_text, system_message=None, memory_context=None):
-        """Summarize context, inject system message, stream the LLM response with TTS."""
+        # Retrieved memories and tool results go out with this request only; the
+        # history keeps just the exchange, so old tool output isn't resent every turn.
         self.auto_summarize_context()
 
-        relevant_context = self.get_relevant_context(command_text)
-        if relevant_context:
-            self.conversation_history.append(
-                {"role": "system", "content": relevant_context}
-            )
-
-        if system_message:
-            self.conversation_history.append(
-                {"role": "system", "content": system_message}
-            )
-
-        self.conversation_history.append({"role": "user", "content": command_text})
+        user_message = {"role": "user", "content": command_text}
+        request = list(self.conversation_history)
+        for extra in (self.get_relevant_context(command_text), system_message):
+            if extra:
+                request.append({"role": "system", "content": extra})
+        request.append(user_message)
 
         print("🔥 Alfred: ", end="", flush=True)
         self.tts_service.reset()
@@ -165,28 +173,28 @@ class ConversationHandler:
                 self.tts_service.speak(sentence)
 
         full_response = self.llm_service.get_completion_streaming(
-            self.conversation_history, on_sentence=on_sentence
+            request, on_sentence=on_sentence
         )
         print()
 
         if full_response:
-            self.conversation_history.append(
-                {"role": "assistant", "content": full_response}
-            )
+            self.conversation_history += [
+                user_message,
+                {"role": "assistant", "content": full_response},
+            ]
             self._store_interaction_memory(command_text, full_response, memory_context)
-        elif self.conversation_history[-1]["role"] == "user":
-            self.conversation_history.pop()
 
         return True
 
     @staticmethod
     def _tool_system_message(label, fields, result, success_summary):
-        """Build the system message describing a tool result for the LLM."""
         lines = [f"{label} result:"]
         lines += [f"{name}: {value}" for name, value in fields.items()]
         lines.append(f"Success: {result['success']}")
         lines.append(
-            success_summary(result) if result["success"] else f"Error: {result['error']}"
+            success_summary(result)
+            if result["success"]
+            else f"Error: {result['error']}"
         )
         return "\n".join(lines)
 
@@ -194,23 +202,17 @@ class ConversationHandler:
         print(f"🔎 Searching for: {query}")
 
         op_id = performance_monitor.start_operation("search_command")
-
         try:
-            search_system_msg = None
-            search_results = self.search_service.multi_source_search(
-                query, num_results=10
-            )
-            if search_results and search_results.get("combined_results"):
-                search_system_msg = self.search_service.format_multi_source_results(
-                    search_results, query
-                )
-
+            results = self.search_service.search_ranked(query, num_results=10)
             self._dispatch_command(
                 command_text,
-                system_message=search_system_msg,
+                system_message=(
+                    self.search_service.format_results(results, query)
+                    if results
+                    else None
+                ),
                 memory_context={"search_performed": True, "search_query": query},
             )
-
             performance_monitor.end_operation(op_id, success=True)
 
         except Exception as e:
@@ -224,7 +226,7 @@ class ConversationHandler:
     def _handle_system_command(self, command_text, command):
         print(f"💻 Executing command: {command}")
 
-        result = self.tool_manager.execute_system_commands(command, safety_check=True)
+        result = self.tool_manager.execute_system_command(command)
 
         return self._dispatch_command(
             command_text,
@@ -313,10 +315,8 @@ class ConversationHandler:
 
     def auto_summarize_context(self) -> bool:
         try:
-            if self._estimate_token_count(self.conversation_history) <= self.max_context_tokens:
+            if _estimate_token_count(self.conversation_history) <= MAX_CONTEXT_TOKENS:
                 return False
-
-            print("🧠 Context approaching limit, summarizing older conversations...")
 
             system_messages = [
                 m for m in self.conversation_history if m["role"] == "system"
@@ -324,20 +324,25 @@ class ConversationHandler:
             other_messages = [
                 m for m in self.conversation_history if m["role"] != "system"
             ]
-
-            recent_messages = other_messages[-10:]
-            older_messages = other_messages[:-10]
+            recent_messages = other_messages[-RECENT_MESSAGES_KEPT:]
+            older_messages = other_messages[:-RECENT_MESSAGES_KEPT]
 
             if not older_messages:
                 return False
+
+            print("🧠 Context approaching limit, summarizing older conversations...")
 
             conversation = "\n".join(
                 f"{m['role'].title()}: {m['content']}" for m in older_messages
             )
             summary = self.llm_service.get_completion(
-                [{"role": "user", "content": SUMMARY_PROMPT.format(conversation=conversation)}]
+                [
+                    {
+                        "role": "user",
+                        "content": SUMMARY_PROMPT.format(conversation=conversation),
+                    }
+                ]
             )
-
             if not summary:
                 return False
 
@@ -365,6 +370,24 @@ class ConversationHandler:
             print(f"Error during context summarization: {e}")
             return False
 
+    def get_relevant_context(self, query: str) -> str:
+        try:
+            if len(query.split()) < 2:
+                return ""
+
+            context_parts = [
+                f"Previous: {m['memory'].user_input[:100]} -> "
+                f"{m['memory'].assistant_response[:150]}"
+                for m in self.semantic_memory_search(query, limit=2)
+                if m["relevance_score"] > 0.3
+            ]
+
+            return "Context: " + " | ".join(context_parts) if context_parts else ""
+
+        except Exception as e:
+            print(f"Error getting relevant context: {e}")
+            return ""
+
     def semantic_memory_search(
         self, query: str, limit: int = 5
     ) -> List[Dict[str, Any]]:
@@ -372,18 +395,16 @@ class ConversationHandler:
             cache_key = f"{query}_{limit}"
             current_time = time.time()
 
-            cached = self._last_memory_search.get(cache_key)
-            if cached and current_time - cached["time"] < self._memory_search_cache_time:
+            cached = self._memory_search_cache.get(cache_key)
+            if cached and current_time - cached["time"] < MEMORY_SEARCH_CACHE_SECONDS:
                 return cached["results"]
 
             query_words = set(query.lower().split())
             if not query_words:
                 return []
 
-            memories = self.memory_manager.recall_episodic_memories(limit=20)
-
             scored = []
-            for memory in memories:
+            for memory in self.memory_manager.recall_episodic_memories(limit=20):
                 words = {w.lower() for w in memory.content.split()[:50]}
                 words |= {w.lower() for w in memory.user_input.split()[:20]}
 
@@ -400,14 +421,13 @@ class ConversationHandler:
             scored.sort(key=lambda x: x["relevance_score"], reverse=True)
             results = scored[:limit]
 
-            # Evict oldest entry instead of clearing entire cache
-            if len(self._last_memory_search) > 100:
+            if len(self._memory_search_cache) > MEMORY_SEARCH_CACHE_SIZE:
                 oldest_key = min(
-                    self._last_memory_search,
-                    key=lambda k: self._last_memory_search[k]["time"],
+                    self._memory_search_cache,
+                    key=lambda k: self._memory_search_cache[k]["time"],
                 )
-                del self._last_memory_search[oldest_key]
-            self._last_memory_search[cache_key] = {
+                del self._memory_search_cache[oldest_key]
+            self._memory_search_cache[cache_key] = {
                 "time": current_time,
                 "results": results,
             }
@@ -417,9 +437,6 @@ class ConversationHandler:
         except Exception as e:
             print(f"Error during semantic memory search: {e}")
             return []
-
-    def _estimate_token_count(self, messages: List[Dict[str, str]]) -> int:
-        return sum(len(msg.get("content", "")) for msg in messages) // 4
 
     def _store_interaction_memory(
         self, user_input: str, assistant_response: str, context: Dict = None
@@ -447,21 +464,3 @@ class ConversationHandler:
 
         except Exception as e:
             print(f"Error storing interaction memory: {e}")
-
-    def get_relevant_context(self, query: str) -> str:
-        try:
-            if len(query.split()) < 2:
-                return ""
-
-            context_parts = [
-                f"Previous: {m['memory'].user_input[:100]} -> "
-                f"{m['memory'].assistant_response[:150]}"
-                for m in self.semantic_memory_search(query, limit=2)
-                if m["relevance_score"] > 0.3
-            ]
-
-            return "Context: " + " | ".join(context_parts) if context_parts else ""
-
-        except Exception as e:
-            print(f"Error getting relevant context: {e}")
-            return ""

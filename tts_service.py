@@ -8,6 +8,8 @@ import edge_tts
 import pygame
 from langdetect import detect, LangDetectException
 
+from utils import stop_event
+
 if sys.platform == "win32":
     import msvcrt
 
@@ -20,6 +22,7 @@ if sys.platform == "win32":
     def _flush_input():
         while msvcrt.kbhit():
             msvcrt.getch()
+
 else:
     import select
     import termios
@@ -51,6 +54,7 @@ else:
         except Exception:
             pass
 
+
 VOICE_MAP = {
     "en": "en-GB-RyanNeural",
     "ro": "ro-RO-EmilNeural",
@@ -73,25 +77,30 @@ VOICE_MAP = {
 
 # Applied in order to every streamed sentence, so they are compiled once.
 SPEECH_SUBSTITUTIONS = [
-    (re.compile(r"\*\*(.+?)\*\*"), r"\1"),                     # **bold**
-    (re.compile(r"\*(.+?)\*"), r"\1"),                         # *italic*
-    (re.compile(r"#{1,6}\s*"), ""),                             # ### headings
-    (re.compile(r"`(.+?)`"), r"\1"),                            # `code`
-    (re.compile(r"^\s*[-\u2022]\s*", re.MULTILINE), ""),        # bullet points
-    (re.compile(r"\[(.+?)\]\(.+?\)"), r"\1"),                   # [link](url)
-    (re.compile(r"https?://\S+"), ""),                          # bare URLs
-    (re.compile(r"\|"), " "),                                   # table pipes
-    (re.compile(r"-{3,}"), ""),                                 # table separators
-    (re.compile(r"^\s*\d+\s*$", re.MULTILINE), ""),             # lone row numbers
-    (re.compile(r"[*_~`]"), ""),                                # leftover markdown
-    (re.compile(r"\s{2,}"), " "),                               # collapse whitespace
+    (re.compile(r"\*\*(.+?)\*\*"), r"\1"),  # **bold**
+    (re.compile(r"\*(.+?)\*"), r"\1"),  # *italic*
+    (re.compile(r"#{1,6}\s*"), ""),  # ### headings
+    (re.compile(r"`(.+?)`"), r"\1"),  # `code`
+    (re.compile(r"^\s*[-\u2022]\s*", re.MULTILINE), ""),  # bullet points
+    (re.compile(r"\[(.+?)\]\(.+?\)"), r"\1"),  # [link](url)
+    (re.compile(r"https?://\S+"), ""),  # bare URLs
+    (re.compile(r"\|"), " "),  # table pipes
+    (re.compile(r"-{3,}"), ""),  # table separators
+    (re.compile(r"^\s*\d+\s*$", re.MULTILINE), ""),  # lone row numbers
+    (re.compile(r"[*_~`]"), ""),  # leftover markdown
+    (re.compile(r"\s{2,}"), " "),  # collapse whitespace
 ]
 
 # Curly quotes confuse the voice; fold them onto their ASCII equivalents.
-QUOTE_TRANSLATION = str.maketrans({
-    "\u201e": '"', "\u201c": '"', "\u201d": '"',
-    "\u2018": "'", "\u2019": "'",
-})
+QUOTE_TRANSLATION = str.maketrans(
+    {
+        "\u201e": '"',
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2018": "'",
+        "\u2019": "'",
+    }
+)
 
 NON_LETTERS = re.compile(
     r"[^a-zA-Z\u00C0-\u024F\u0400-\u04FF\u4e00-\u9fff\uac00-\ud7af]"
@@ -123,7 +132,7 @@ class TTSService:
         return len(NON_LETTERS.sub("", text)) >= 2
 
     def speak(self, text):
-        if not text or not text.strip() or self.interrupted:
+        if not text or not text.strip() or self.interrupted or stop_event.is_set():
             return
         try:
             clean_text = self._clean_for_speech(text)
@@ -165,6 +174,9 @@ class TTSService:
         pygame.mixer.music.load(tmp_path)
         pygame.mixer.music.play()
         while pygame.mixer.music.get_busy():
+            if stop_event.is_set():
+                self.stop()
+                return
             if _kbhit():
                 _getch()
                 self.stop()

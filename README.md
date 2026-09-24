@@ -124,9 +124,9 @@ Results are cached for an hour, so repeating a search is instant and free.
 Say: `run command` · `execute` · `terminal` · `shell command`
 
 > "Alfred, run command git status"
-> "Alfred, execute pwd"
+> "Alfred, execute ls -la | head"
 
-Runs in safe mode — see [Safety](#safety) below.
+Commands run through **bash**, so pipes, `&&` and Unix tools work. On Windows this is Git Bash, found automatically from your Git for Windows install; without it, system commands report an error. Runs in safe mode — see [Safety](#safety) below.
 
 ### Read a file
 
@@ -155,7 +155,7 @@ Add **`for <type>`** to choose what to extract — `text` (default), `links`, `i
 
 | What you want | Say |
 |---|---|
-| See the command reference | `show commands` · `help` · `what can you do` |
+| See the command reference | `show commands` · `what can you do` |
 | Forget the conversation so far | `clear context` · `start fresh` · `forget everything` · `new conversation` |
 | See timing statistics | `performance stats` · `show stats` · `performance` |
 | Shut AlfreD down | `close script` · `shut down` · `goodbye` · `turn off` · `exit` · `quit` |
@@ -204,7 +204,7 @@ AlfreD detects the language of each sentence and switches voices automatically (
 System commands and file operations run in **safe mode** by default:
 
 - Destructive commands are blocked (`rm`, `del`, `format`, `mkfs`, `shutdown`, `reboot`, `fdisk`, `chmod 777`, …)
-- System directories are off limits (`/etc`, `/sys`, `/proc`, `/dev`, `/boot`, `/root`)
+- Unix system directories are off limits for file operations (`/etc`, `/sys`, `/proc`, `/dev`, `/boot`, `/root`). Windows paths are not restricted
 - Commands time out after 30 seconds
 - Scraping is restricted to `http`/`https` and blocks localhost and loopback addresses
 

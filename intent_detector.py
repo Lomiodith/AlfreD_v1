@@ -1,12 +1,20 @@
+import re
 from difflib import SequenceMatcher
 
 INTENT_TRIGGERS = {
     "search": (
         True,
         [
-            "search for", "look up", "find me", "google",
-            "search", "look for", "what is", "who is",
-            "tell me about", "find out",
+            "search for",
+            "look up",
+            "find me",
+            "google",
+            "search",
+            "look for",
+            "what is",
+            "who is",
+            "tell me about",
+            "find out",
         ],
     ),
     "system_command": (
@@ -27,7 +35,7 @@ INTENT_TRIGGERS = {
     ),
     "show_commands": (
         False,
-        ["show commands", "help", "commands", "what can you do", "show me commands"],
+        ["show commands", "commands", "what can you do", "show me commands"],
     ),
     "performance": (
         False,
@@ -36,8 +44,11 @@ INTENT_TRIGGERS = {
     "clear_context": (
         False,
         [
-            "clear context", "reset context", "start fresh",
-            "forget everything", "new conversation",
+            "clear context",
+            "reset context",
+            "start fresh",
+            "forget everything",
+            "new conversation",
         ],
     ),
     "terminate": (
@@ -46,7 +57,11 @@ INTENT_TRIGGERS = {
     ),
 }
 
-FUZZY_THRESHOLD = 0.7
+FUZZY_THRESHOLD = 0.9
+
+# Whisper punctuates transcripts ("Read file notes.txt."); none of it belongs in
+# the argument.
+QUERY_EDGE_PUNCTUATION = " ,.;:!?"
 
 
 class IntentDetector:
@@ -55,7 +70,12 @@ class IntentDetector:
         # specific phrase wins ("search for" before "search").
         self.triggers = sorted(
             (
-                (trigger, intent, extract_query)
+                (
+                    trigger,
+                    intent,
+                    extract_query,
+                    re.compile(r"\b" + re.escape(trigger) + r"\b"),
+                )
                 for intent, (extract_query, triggers) in INTENT_TRIGGERS.items()
                 for trigger in triggers
             ),
@@ -67,21 +87,20 @@ class IntentDetector:
         """Returns (intent_name, query) or ("general", original_text)."""
         normalized = text.lower().strip()
 
-        # First pass: exact prefix match (fast, most reliable)
-        for trigger, intent, extract_query in self.triggers:
-            if normalized.startswith(trigger):
-                query = text[len(trigger):].strip() if extract_query else text
-                return intent, query
-
-        # Second pass: trigger appears anywhere in the text
-        for trigger, intent, _ in self.triggers:
-            if trigger in normalized:
+        for trigger, intent, extract_query, pattern in self.triggers:
+            if pattern.match(normalized):
+                if extract_query:
+                    return intent, text[len(trigger) :].strip(QUERY_EDGE_PUNCTUATION)
                 return intent, text
 
-        # Third pass: fuzzy similarity for close matches (speech-to-text errors)
+        for _, intent, _, pattern in self.triggers:
+            if pattern.search(normalized):
+                return intent, text
+
+        # Absorbs speech-to-text errors in the leading words ("serch for").
         best_intent = None
         best_score = 0.0
-        for trigger, intent, _ in self.triggers:
+        for trigger, intent, _, _ in self.triggers:
             input_start = " ".join(normalized.split()[: len(trigger.split())])
             score = SequenceMatcher(None, input_start, trigger).ratio()
             if score > best_score:

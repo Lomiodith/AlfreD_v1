@@ -1,6 +1,10 @@
 import glob
 import os
 import tempfile
+import threading
+
+# Set by the tray's Stop; every blocking stage polls it so a stop is immediate.
+stop_event = threading.Event()
 
 
 def clean_temp_audio():

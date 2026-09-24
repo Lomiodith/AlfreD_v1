@@ -10,38 +10,40 @@ from AlfreD_v1 import main as alfred_main, stop_event
 
 def get_base_path():
     """Get base path - works both for dev and PyInstaller bundle."""
-    if getattr(sys, 'frozen', False):
+    if getattr(sys, "frozen", False):
         return Path(sys._MEIPASS)
-    return Path.cwd()
+    return Path(__file__).resolve().parent
 
 
 class AlfredTray:
     def __init__(self):
-        self.running = False
         self.alfred_thread = None
         self.icon = None
+
+    def _is_running(self):
+        return self.alfred_thread is not None and self.alfred_thread.is_alive()
 
     def create_icon_image(self):
         return Image.open(get_base_path() / "assets" / "alfred_128.png")
 
     def start_alfred(self, icon, item):
-        if self.running:
+        if self._is_running():
             return
         stop_event.clear()
-        self.running = True
         self.alfred_thread = threading.Thread(target=self._run_alfred, daemon=True)
         self.alfred_thread.start()
         print("Alfred initialized")
 
     def stop_alfred(self, icon=None, item=None):
-        if not self.running:
+        if not self._is_running():
             return
         stop_event.set()
-        if self.alfred_thread and self.alfred_thread.is_alive():
-            self.alfred_thread.join(timeout=5)
-        self.alfred_thread = None
-        self.running = False
-        print("Alfred stopped")
+        self.alfred_thread.join(timeout=5)
+        print(
+            "Alfred stopped"
+            if not self._is_running()
+            else "Alfred is still stopping..."
+        )
 
     def quit_app(self, icon, item):
         self.stop_alfred()
@@ -52,8 +54,6 @@ class AlfredTray:
             alfred_main()
         except Exception as e:
             print(f"Encountered an error : {e}")
-        finally:
-            self.running = False
 
     def run(self):
         menu = pystray.Menu(

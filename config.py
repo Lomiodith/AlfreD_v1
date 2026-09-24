@@ -2,7 +2,7 @@ import os
 import sys
 from dotenv import load_dotenv
 
-if getattr(sys, 'frozen', False):
+if getattr(sys, "frozen", False):
     _base = sys._MEIPASS
 else:
     _base = os.path.dirname(os.path.abspath(__file__))

@@ -1,0 +1,198 @@
+{
+ "search for python tutorials": [
+  "search",
+  "python tutorials"
+ ],
+ "look up the weather": [
+  "search",
+  "the weather"
+ ],
+ "google cats": [
+  "search",
+  "cats"
+ ],
+ "find me a hotel": [
+  "search",
+  "a hotel"
+ ],
+ "what is quantum physics": [
+  "search",
+  "quantum physics"
+ ],
+ "who is ada lovelace": [
+  "search",
+  "ada lovelace"
+ ],
+ "tell me about rome": [
+  "search",
+  "rome"
+ ],
+ "find out the time": [
+  "search",
+  "the time"
+ ],
+ "run command ls -la": [
+  "system_command",
+  "ls -la"
+ ],
+ "execute pwd": [
+  "system_command",
+  "pwd"
+ ],
+ "terminal uname": [
+  "system_command",
+  "uname"
+ ],
+ "shell command dir": [
+  "system_command",
+  "dir"
+ ],
+ "read file config.py": [
+  "read_file",
+  "config.py"
+ ],
+ "open file notes.txt": [
+  "read_file",
+  "notes.txt"
+ ],
+ "show file a.md": [
+  "read_file",
+  "a.md"
+ ],
+ "what's in file b.txt": [
+  "read_file",
+  "b.txt"
+ ],
+ "write file x.txt with content hello": [
+  "write_file",
+  "x.txt with content hello"
+ ],
+ "save file y": [
+  "write_file",
+  "y"
+ ],
+ "create file z": [
+  "write_file",
+  "z"
+ ],
+ "write to file q": [
+  "write_file",
+  "q"
+ ],
+ "scrape https://a.com": [
+  "scrape",
+  "https://a.com"
+ ],
+ "web scrape https://b.com for links": [
+  "scrape",
+  "https://b.com for links"
+ ],
+ "get the page https://c.com": [
+  "scrape",
+  "https://c.com"
+ ],
+ "fetch the page https://d.com": [
+  "scrape",
+  "https://d.com"
+ ],
+ "grab the page https://e.com": [
+  "scrape",
+  "https://e.com"
+ ],
+ "show commands": [
+  "show_commands",
+  "show commands"
+ ],
+ "help": [
+  "general",
+  "help"
+ ],
+ "commands": [
+  "show_commands",
+  "commands"
+ ],
+ "what can you do": [
+  "show_commands",
+  "what can you do"
+ ],
+ "show me commands": [
+  "show_commands",
+  "show me commands"
+ ],
+ "performance stats": [
+  "performance",
+  "performance stats"
+ ],
+ "show stats": [
+  "performance",
+  "show stats"
+ ],
+ "performance": [
+  "performance",
+  "performance"
+ ],
+ "how are you performing": [
+  "performance",
+  "how are you performing"
+ ],
+ "clear context": [
+  "clear_context",
+  "clear context"
+ ],
+ "reset context": [
+  "clear_context",
+  "reset context"
+ ],
+ "start fresh": [
+  "clear_context",
+  "start fresh"
+ ],
+ "forget everything": [
+  "clear_context",
+  "forget everything"
+ ],
+ "new conversation": [
+  "clear_context",
+  "new conversation"
+ ],
+ "close script": [
+  "terminate",
+  "close script"
+ ],
+ "shut down": [
+  "terminate",
+  "shut down"
+ ],
+ "goodbye": [
+  "terminate",
+  "goodbye"
+ ],
+ "turn off": [
+  "terminate",
+  "turn off"
+ ],
+ "exit": [
+  "terminate",
+  "exit"
+ ],
+ "quit": [
+  "terminate",
+  "quit"
+ ],
+ "hello there how are you": [
+  "general",
+  "hello there how are you"
+ ],
+ "tell me a joke": [
+  "general",
+  "tell me a joke"
+ ],
+ "serch for python": [
+  "search",
+  "serch for python"
+ ],
+ "wat is the time": [
+  "search",
+  "wat is the time"
+ ]
+}

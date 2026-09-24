@@ -1,8 +1,8 @@
-import time
 import threading
-from typing import Any, Dict
-from dataclasses import dataclass
+import time
 from collections import deque
+from dataclasses import dataclass
+from typing import Any, Dict
 
 SLOW_OPERATION_SECONDS = 2.0
 RECENT_SLOW_SECONDS = 1.0
@@ -24,39 +24,40 @@ class PerformanceMonitor:
         self.lock = threading.Lock()
 
     def start_operation(self, operation: str) -> str:
-        """Start timing an operation. Returns operation ID."""
         operation_id = f"{operation}_{int(time.time() * 1000)}"
         with self.lock:
             self.operation_times[operation_id] = {
-                'operation': operation,
-                'start_time': time.time()
+                "operation": operation,
+                "start_time": time.time(),
             }
         return operation_id
 
-    def end_operation(self, operation_id: str, success: bool = True, details: Dict = None):
-        """End timing an operation."""
+    def end_operation(
+        self, operation_id: str, success: bool = True, details: Dict = None
+    ):
         end_time = time.time()
 
         with self.lock:
             if operation_id in self.operation_times:
                 start_data = self.operation_times.pop(operation_id)
-                duration = end_time - start_data['start_time']
+                duration = end_time - start_data["start_time"]
 
                 metric = PerformanceMetric(
-                    operation=start_data['operation'],
+                    operation=start_data["operation"],
                     duration=duration,
                     timestamp=end_time,
                     success=success,
-                    details=details or {}
+                    details=details or {},
                 )
 
                 self.metrics.append(metric)
 
                 if duration > SLOW_OPERATION_SECONDS:
-                    print(f"⚠️ Slow operation: {start_data['operation']} took {duration:.2f}s")
+                    print(
+                        f"⚠️ Slow operation: {start_data['operation']} took {duration:.2f}s"
+                    )
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get performance statistics."""
         with self.lock:
             if not self.metrics:
                 return {}
@@ -72,40 +73,39 @@ class PerformanceMonitor:
                 op_name = metric.operation
                 if op_name not in operations:
                     operations[op_name] = {
-                        'count': 0,
-                        'total_time': 0,
-                        'min_time': float('inf'),
-                        'max_time': 0,
-                        'failures': 0
+                        "count": 0,
+                        "total_time": 0,
+                        "min_time": float("inf"),
+                        "max_time": 0,
+                        "failures": 0,
                     }
 
                 ops = operations[op_name]
-                ops['count'] += 1
-                ops['total_time'] += metric.duration
-                ops['min_time'] = min(ops['min_time'], metric.duration)
-                ops['max_time'] = max(ops['max_time'], metric.duration)
+                ops["count"] += 1
+                ops["total_time"] += metric.duration
+                ops["min_time"] = min(ops["min_time"], metric.duration)
+                ops["max_time"] = max(ops["max_time"], metric.duration)
 
                 if not metric.success:
-                    ops['failures'] += 1
+                    ops["failures"] += 1
 
             for op_name in operations:
                 ops = operations[op_name]
-                ops['avg_time'] = ops['total_time'] / ops['count']
-                ops['success_rate'] = (ops['count'] - ops['failures']) / ops['count']
+                ops["avg_time"] = ops["total_time"] / ops["count"]
+                ops["success_rate"] = (ops["count"] - ops["failures"]) / ops["count"]
 
             return {
-                'total_operations': total_operations,
-                'success_rate': successful_operations / total_operations,
-                'operations': operations,
-                'recent_slow_operations': [
-                    {'operation': m.operation, 'duration': m.duration}
+                "total_operations": total_operations,
+                "success_rate": successful_operations / total_operations,
+                "operations": operations,
+                "recent_slow_operations": [
+                    {"operation": m.operation, "duration": m.duration}
                     for m in list(self.metrics)[-10:]
                     if m.duration > RECENT_SLOW_SECONDS
-                ]
+                ],
             }
 
     def print_stats(self):
-        """Print performance statistics."""
         stats = self.get_stats()
         if not stats:
             print("No performance data available")
@@ -117,16 +117,18 @@ class PerformanceMonitor:
         print(f"Success Rate: {stats['success_rate']:.1%}")
         print("\nOperation Breakdown:")
 
-        for op_name, op_stats in stats['operations'].items():
+        for op_name, op_stats in stats["operations"].items():
             print(f"\n{op_name}:")
             print(f"  Count: {op_stats['count']}")
             print(f"  Avg Time: {op_stats['avg_time']:.3f}s")
-            print(f"  Min/Max: {op_stats['min_time']:.3f}s / {op_stats['max_time']:.3f}s")
+            print(
+                f"  Min/Max: {op_stats['min_time']:.3f}s / {op_stats['max_time']:.3f}s"
+            )
             print(f"  Success Rate: {op_stats['success_rate']:.1%}")
 
-        if stats['recent_slow_operations']:
+        if stats["recent_slow_operations"]:
             print("\n⚠️ Recent Slow Operations:")
-            for slow_op in stats['recent_slow_operations']:
+            for slow_op in stats["recent_slow_operations"]:
                 print(f"  {slow_op['operation']}: {slow_op['duration']:.2f}s")
 
 

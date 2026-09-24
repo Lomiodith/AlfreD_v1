@@ -5,6 +5,7 @@ import traceback
 from groq import Groq
 
 from config import TEMPERATURE, GROQ_API_KEY
+from utils import stop_event
 
 SENTENCE = re.compile(r"[^.!?\n]*[.!?\n]")
 
@@ -23,10 +24,12 @@ class LLMService:
     def _with_fallback(self, attempt, label):
         """Run attempt(model) on the primary model, then the fallback."""
         result = attempt(self.model)
-        if result:
+        if result or stop_event.is_set():
             return result
 
-        print(f"⚠️ {self.model} {label} failed, switching to fallback: {self.fallback_model}")
+        print(
+            f"⚠️ {self.model} {label} failed, switching to fallback: {self.fallback_model}"
+        )
         return attempt(self.fallback_model)
 
     def _create(self, messages, model_name, **kwargs):
@@ -53,7 +56,9 @@ class LLMService:
         for attempt in range(self.max_retries):
             try:
                 if attempt > 0:
-                    print(f"🔄 Retry {attempt}/{self.max_retries - 1} on {model_name}...")
+                    print(
+                        f"🔄 Retry {attempt}/{self.max_retries - 1} on {model_name}..."
+                    )
 
                 response = self._create(messages, model_name)
 
@@ -84,6 +89,8 @@ class LLMService:
             buffer = ""
 
             for chunk in stream:
+                if stop_event.is_set():
+                    break
                 delta = chunk.choices[0].delta.content
                 if not delta:
                     continue
@@ -92,7 +99,7 @@ class LLMService:
                 full_response += delta
 
                 while match := SENTENCE.match(buffer):
-                    buffer = buffer[match.end():]
+                    buffer = buffer[match.end() :]
                     sentence = match.group().strip()
                     if sentence:
                         on_sentence(sentence)

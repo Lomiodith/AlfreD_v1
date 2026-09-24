@@ -1,14 +1,11 @@
 import os
-import threading
 
 from audio_processor import AudioProcessor
 from conversation_handler import ConversationHandler
 from llm_service import LLMService
 from search_service import SearchService
 from tts_service import TTSService
-from utils import clean_temp_audio
-
-stop_event = threading.Event()
+from utils import clean_temp_audio, stop_event
 
 
 def main():
