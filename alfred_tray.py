@@ -1,3 +1,4 @@
+import logging
 import sys
 import threading
 from pathlib import Path
@@ -5,7 +6,10 @@ from pathlib import Path
 import pystray
 from PIL import Image
 
-from AlfreD_v1 import main as alfred_main, stop_event
+from AlfreD_v2 import main as alfred_main, stop_event
+from utils import setup_logging
+
+logger = logging.getLogger(__name__)
 
 
 def get_base_path():
@@ -32,14 +36,14 @@ class AlfredTray:
         stop_event.clear()
         self.alfred_thread = threading.Thread(target=self._run_alfred, daemon=True)
         self.alfred_thread.start()
-        print("Alfred initialized")
+        logger.info("Alfred initialized")
 
     def stop_alfred(self, icon=None, item=None):
         if not self._is_running():
             return
         stop_event.set()
         self.alfred_thread.join(timeout=5)
-        print(
+        logger.info(
             "Alfred stopped"
             if not self._is_running()
             else "Alfred is still stopping..."
@@ -53,7 +57,7 @@ class AlfredTray:
         try:
             alfred_main()
         except Exception as e:
-            print(f"Encountered an error : {e}")
+            logger.error(f"Encountered an error : {e}")
 
     def run(self):
         menu = pystray.Menu(
@@ -68,5 +72,6 @@ class AlfredTray:
 
 
 if __name__ == "__main__":
+    setup_logging()
     tray = AlfredTray()
     tray.run()

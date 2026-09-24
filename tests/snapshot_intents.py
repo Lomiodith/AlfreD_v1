@@ -1,6 +1,6 @@
 """Characterisation snapshot for IntentDetector.
 
-Pins how 49 sample utterances route today, so a refactor can prove it changed
+Pins how a set of sample utterances route today, so a refactor can prove it changed
 nothing. This catches regressions; it does NOT tell you the pinned behaviour is
 correct.
 
@@ -70,12 +70,22 @@ CASES = [
     "tell me a joke",
     "serch for python",
     "wat is the time",
+    "how do I exit vim",
+    "quit smoking tips",
+    "okay shut down please",
+    "Exit.",
+    "text mode",
+    "voice mode",
+    "switch to text mode so I can read the code",
+    "No.",
+    "no thanks",
+    "stop the pasta timer",
 ]
 
 
 def current():
     detector = IntentDetector()
-    return {case: list(detector.detect(case)) for case in CASES}
+    return {case: detector.detect(case) for case in CASES}
 
 
 def main():

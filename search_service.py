@@ -1,3 +1,4 @@
+import logging
 import hashlib
 import json
 import os
@@ -6,7 +7,12 @@ from typing import Dict, List, Optional
 
 from ddgs import DDGS
 
+logger = logging.getLogger(__name__)
+
 CACHE_SECONDS = 3600
+# Results go into every later request of an agent turn, so keep them lean:
+# the per-minute token limit is what trips first.
+MAX_SNIPPET_CHARS = 300
 
 SEARCH_PREAMBLE = (
     "Use the following web search results to answer the user's question about "
@@ -28,7 +34,7 @@ class SearchService:
     def format_results(self, items: List[Dict], query: str) -> str:
         lines = [SEARCH_PREAMBLE.format(query=query)]
         for idx, item in enumerate(items, 1):
-            snippet = item["snippet"].replace("\n", " ")
+            snippet = item["snippet"].replace("\n", " ")[:MAX_SNIPPET_CHARS]
             lines.append(
                 f"[{idx}] {item['title']}\n    URL: {item['link']}\n    {snippet}"
             )
@@ -47,7 +53,7 @@ class SearchService:
                 for r in results
             ]
         except Exception as e:
-            print(f"Error during search: {e}")
+            logger.error(f"Error during search: {e}")
             return None
 
     def _cache_path(self, query: str, num_results: int) -> str:
@@ -67,10 +73,10 @@ class SearchService:
                     time.time() - cached.get("timestamp", 0) < CACHE_SECONDS
                     and "items" in cached
                 ):
-                    print(f"Using cached results for: {query}")
+                    logger.info(f"Using cached results for: {query}")
                     return cached["items"]
             except Exception as e:
-                print(f"Error reading cache: {e}")
+                logger.error(f"Error reading cache: {e}")
 
         items = self._search(query, num_results)
 
@@ -81,7 +87,7 @@ class SearchService:
                         {"timestamp": time.time(), "query": query, "items": items}, f
                     )
             except Exception as e:
-                print(f"Error writing to cache: {e}")
+                logger.error(f"Error writing to cache: {e}")
 
         return items
 

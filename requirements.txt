@@ -1,22 +1,28 @@
-# Core LLM / API
+# LLM: Groq, and the OpenAI-compatible client for the local llama.cpp server
 groq>=0.11.0
+openai>=1.40.0
 python-dotenv>=1.0.0
 
 # Audio capture & processing
 sounddevice>=0.4.6
 scipy>=1.11.0
-numpy>=1.26.0,<2.0.0
+numpy>=1.26.0
 
-# Speech recognition (Whisper)
+# Speech recognition (Parakeet / Whisper) and the memory embedding model
 # NOTE: On Windows with NVIDIA GPU, install CUDA-enabled torch from:
-#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
 # The plain `torch` wheel below is CPU-only on Windows; on macOS it includes MPS support.
 torch>=2.2.0
-transformers>=4.44.0
+# 5.x is needed for Parakeet; Whisper works on 4.x too
+transformers>=5.0.0
 accelerate>=0.30.0
 safetensors>=0.4.0
 
-# TTS
+# End-of-turn detection (Smart Turn)
+onnxruntime>=1.18.0
+
+# TTS: Kokoro (local, English) and Edge (online, every language)
+kokoro>=0.9.4
 edge-tts>=7.0.0
 pygame>=2.5.0
 langdetect>=1.0.9
@@ -25,6 +31,10 @@ langdetect>=1.0.9
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 ddgs>=9.0.0
+
+# Integrations (Gmail / Google Calendar; GitHub uses the gh CLI)
+google-api-python-client>=2.100.0
+google-auth-oauthlib>=1.2.0
 
 # Tests
 pytest>=8.0.0

@@ -1,7 +1,8 @@
 __pycache__/
-.env.txt
 search_cache/
 memory_data/
-memory_data 2/
 .vscode/
 assets/
+.env
+logs/
+secrets/

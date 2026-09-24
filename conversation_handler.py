@@ -1,19 +1,58 @@
+import json
+import logging
 import time
-from typing import Any, Dict, List
+from datetime import datetime
+from typing import Dict, List
 
 from commands import get_formatted_commands
-from config import WAKE_WORD, WAKE_WORD_DURATION
+from config import (
+    ALLOWED_LANGUAGES,
+    FOLLOW_UP_SECONDS,
+    LLM_MAX_TOKENS,
+    LLM_MAX_TOKENS_TEXT,
+    LLM_REASONING_TEXT,
+    LLM_REASONING_VOICE,
+    VOICE_OUTPUT,
+    WAKE_WORD,
+    WAKE_WORD_DURATION,
+)
+from embeddings import Embedder
+from github_tools import github_tools
+from google_tools import google_tools
 from intent_detector import IntentDetector
-from memory_manager import MemoryManager
+from language_guard import spoken_language, unexpected_language
+from memory_manager import FACT_EVENT, MemoryManager
 from performance_monitor import performance_monitor
+from timers import TimerService
 from tool_manager import ToolManager
+from tools import Tool, ToolRegistry, core_tools, memory_tools, params
 from utils import stop_event
 
-SYSTEM_PROMPT = """You are Alfred, a helpful voice assistant. Answer the user's questions directly and conversationally. Use information from previous interactions for context.
+logger = logging.getLogger(__name__)
 
-Important: Always respond with a direct answer. Never attempt to call tools, functions, or commands. Never output structured/JSON responses. Just speak naturally to the user.
+SYSTEM_PROMPT = """You are Alfred, a helpful personal assistant.
 
-If the user asks you to search, the search results will be provided to you as system messages — just summarize them for the user."""
+Reply in the language the user spoke (a Romanian question gets a Romanian answer), even when tool results are in another language.
+
+Requests come from speech recognition and can be garbled. If one doesn't make sense, ask the user to repeat it instead of guessing.
+
+Tools: use them whenever they help, e.g. web_search for current events or facts you're unsure of, set_timer for timers. Never invent a tool result; if a tool fails, say so briefly.
+Never say you did something (set a timer, saved a fact, searched, created an event) unless you called the tool for it in this turn and it succeeded. To do it, call the tool; don't describe doing it.
+Search once per question. Only search again if the first results clearly don't answer it, and then with a genuinely different query, not a rephrasing.
+
+When the user asks you to search, look something up or check, always call the tool, even if you think you know the answer or an earlier conversation covered it. If the user disputes a fact, verify it with a search rather than repeating yourself.
+
+Memory: save with remember only when the user explicitly asks you to remember something. For "what do you know about me" or anything about their past requests, use recall before answering. Memory holds the user's facts and past questions, not answers: never treat it as a source for facts about the world."""
+
+# Sent with each request rather than stored in the history, so switching mode
+# mid-conversation takes effect immediately.
+VOICE_STYLE = """Output mode: VOICE. Everything you write is spoken aloud.
+- Keep each reply to two or three short spoken sentences.
+- Only if there is clearly more worth saying, stop and ask "Want more?". If the answer is already complete, don't ask. If the user says yes, continue with the next part, again briefly.
+- Plain speech only: no markdown, lists, tables, code, URLs or file paths (say just the file or folder name). Summarise tool output (file listings, search results, emails) instead of reading it out; give counts and highlights."""
+
+TEXT_STYLE = """Output mode: TEXT. Your reply is shown on screen, not spoken.
+Give complete answers. Markdown, lists, code blocks and URLs are fine, and you may show tool output in full when it's useful."""
 
 SUMMARY_PROMPT = """Please summarize the following conversation, focusing on:
 1. Key topics discussed
@@ -28,16 +67,23 @@ Provide a concise summary that preserves the essential context for future intera
 
 MAX_CONTEXT_TOKENS = 4000
 RECENT_MESSAGES_KEPT = 10
-MEMORY_SEARCH_CACHE_SECONDS = 60
-MEMORY_SEARCH_CACHE_SIZE = 100
-
-
-def _truncate(text: str, limit: int) -> str:
-    return text[:limit] + "..." if len(text) > limit else text
+# Past tool calls stay in the history so the model keeps seeing that actions
+# take a tool call; without them, a local model answered "I've opened it" with
+# no call at all. Their results are trimmed so old output isn't resent in full.
+HISTORY_TOOL_RESULT_CHARS = 300
 
 
 def _estimate_token_count(messages: List[Dict[str, str]]) -> int:
-    return sum(len(msg.get("content", "")) for msg in messages) // 4
+    return sum(len(msg.get("content") or "") for msg in messages) // 4
+
+
+def _trimmed(message: Dict) -> Dict:
+    if (
+        message["role"] != "tool"
+        or len(message["content"]) <= HISTORY_TOOL_RESULT_CHARS
+    ):
+        return message
+    return {**message, "content": message["content"][:HISTORY_TOOL_RESULT_CHARS] + "…"}
 
 
 def _fresh_history():
@@ -48,89 +94,155 @@ class ConversationHandler:
     def __init__(self, audio_processor, llm_service, search_service, tts_service):
         self.audio_processor = audio_processor
         self.llm_service = llm_service
-        self.search_service = search_service
         self.tts_service = tts_service
-        self.memory_manager = MemoryManager()
-        self.tool_manager = ToolManager(safe_mode=True)
+        self.memory_manager = MemoryManager(Embedder())
         self.intent_detector = IntentDetector()
+        self.timer_service = TimerService()
+        self.tools = ToolRegistry()
+        self.tools.register(
+            *core_tools(
+                ToolManager(safe_mode=True), search_service, self.timer_service
+            ),
+            *memory_tools(self.memory_manager),
+            *github_tools(),
+            *google_tools(),
+            Tool(
+                "set_output_mode",
+                "Switch between VOICE (short spoken answers) and TEXT (full answers shown on "
+                "screen, nothing spoken). Use when the user asks to read, see or stop hearing "
+                "the output.",
+                params(["mode"], mode={"type": "string", "enum": ["voice", "text"]}),
+                self._set_output_mode,
+            ),
+        )
         self.conversation_history = _fresh_history()
-        self._memory_search_cache = {}
+        self._awaiting_reply = False
+        # Transcript held while Alfred asks whether its language was intended.
+        self._pending_foreign_text = None
+        self.voice_output = VOICE_OUTPUT
+
+    def announce_timers(self):
+        for message in self.timer_service.pending_announcements():
+            print(f"⏰ {message}")
+            if self.voice_output:
+                self.tts_service.reset()
+                self.tts_service.speak(message)
+
+    def _set_output_mode(self, mode: str):
+        self.voice_output = mode == "voice"
+        logger.info(f"🔈 Output mode: {mode}")
+        return {"mode": mode}
+
+    def shutdown(self):
+        self.timer_service.cancel_all()
 
     def detect_wake_word(self, transcript):
         return WAKE_WORD.lower() in transcript.lower()
 
     def process_wake_word_detection(self):
-        print("\nListening for your calling, master...")
+        logger.info("\nListening for your calling, master...")
         temp_wake_path = None
 
-        op_id = performance_monitor.start_operation("wake_word_detection")
         try:
             with self.audio_processor.create_temp_audio_file() as tmpfile:
                 temp_wake_path = tmpfile.name
 
-            self.audio_processor.record_audio(temp_wake_path, WAKE_WORD_DURATION)
-            if stop_event.is_set():
-                performance_monitor.end_operation(op_id, success=True)
+            heard_speech = self.audio_processor.record_audio(
+                temp_wake_path, WAKE_WORD_DURATION
+            )
+            # Silent windows never reach Whisper: they cost GPU time and it
+            # hallucinates text ("Thank you.") for them.
+            if stop_event.is_set() or not heard_speech:
                 return False
+
+            # Timed from here: the fixed-length recording above isn't a slowdown.
+            op_id = performance_monitor.start_operation("wake_word_transcription")
             transcript = self.audio_processor.transcribe_audio(temp_wake_path)
+            performance_monitor.end_operation(op_id, success=bool(transcript))
 
-            result = False
-            if transcript and transcript.strip():
-                print(f'Heard: "{transcript}"')
-                result = self.detect_wake_word(transcript)
-
-            performance_monitor.end_operation(op_id, success=True)
-            return result
+            if not (transcript and transcript.strip()):
+                return False
+            logger.info(f'Heard: "{transcript}"')
+            return self.detect_wake_word(transcript)
 
         except Exception as e:
-            print(f"Error during wake word processing: {e}")
-            performance_monitor.end_operation(
-                op_id, success=False, details={"error": str(e)}
-            )
+            logger.error(f"Error during wake word processing: {e}")
             return False
         finally:
             self.audio_processor.cleanup_temp_file(temp_wake_path)
 
     def process_command(self):
-        print("✅ Wake word detected! Listening for command...")
+        logger.info("✅ Wake word detected! Listening for command...")
+        keep_running = self._listen_and_handle()
+        # After Alfred asks something ("Want more?"), take the reply without
+        # requiring the wake word again.
+        while keep_running and self._awaiting_reply and not stop_event.is_set():
+            logger.info("👂 Listening for your reply...")
+            keep_running = self._listen_and_handle(start_timeout=FOLLOW_UP_SECONDS)
+        return keep_running
+
+    def _listen_and_handle(self, start_timeout=None):
+        self._awaiting_reply = False
         temp_cmd_path = None
 
         try:
             with self.audio_processor.create_temp_audio_file() as cmdfile:
                 temp_cmd_path = cmdfile.name
 
-            self.audio_processor.record_until_silence(temp_cmd_path)
+            heard_speech = self.audio_processor.record_until_silence(
+                temp_cmd_path, start_timeout=start_timeout
+            )
             if stop_event.is_set():
                 return False
+            # Whisper invents text ("Thank you.") for silent audio, so only
+            # transcribe when the voice detector actually heard someone.
+            if not heard_speech:
+                logger.info("🤷 No speech heard.")
+                return True
             command_text = self.audio_processor.transcribe_audio(temp_cmd_path)
 
             if not command_text.strip():
-                print("🤷 Command was empty or just silence.")
+                logger.info("🤷 Command was empty or just silence.")
                 return True
 
-            print(f'Command heard: "{command_text}"')
+            logger.info(f'Command heard: "{command_text}"')
             return self._handle_command(command_text)
 
         except Exception as e:
-            print(f"Error during command processing: {e}")
+            logger.error(f"Error during command processing: {e}")
             return True
         finally:
             self.audio_processor.cleanup_temp_file(temp_cmd_path)
 
+    def _say(self, text):
+        print(f"🔥 Alfred: {text}")
+        if self.voice_output:
+            self.tts_service.reset()
+            self.tts_service.speak(text)
+
     def _handle_command(self, command_text):
-        intent, query = self.intent_detector.detect(command_text)
+        intent = self.intent_detector.detect(command_text)
+
+        if self._pending_foreign_text:
+            pending, self._pending_foreign_text = self._pending_foreign_text, None
+            if intent == "affirm":
+                return self._dispatch_command(pending)
+            if intent == "decline":
+                self._say("Okay, please say it again.")
+                self._awaiting_reply = True
+                return True
 
         if intent == "terminate":
-            print("🛑 Shutdown command detected. Shutting down Alfred.")
+            logger.info("🛑 Shutdown command detected. Shutting down Alfred.")
             return False
 
         if intent == "clear_context":
-            print("🧠 Context cleared. Starting fresh conversation.")
+            logger.info("🧠 Context cleared. Starting fresh conversation.")
             self.conversation_history = _fresh_history()
             return True
 
         if intent == "show_commands":
-            print("📋 Displaying command reference...")
+            logger.info("📋 Displaying command reference...")
             print("\n" + get_formatted_commands())
             return True
 
@@ -138,180 +250,152 @@ class ConversationHandler:
             performance_monitor.print_stats()
             return True
 
-        if intent == "search":
-            return self._handle_search_command(command_text, query)
+        if intent == "decline":
+            logger.info("👍 Okay, done.")
+            return True
 
-        if intent == "system_command":
-            return self._handle_system_command(command_text, query)
+        if intent in ("voice_on", "voice_off"):
+            self._set_output_mode("voice" if intent == "voice_on" else "text")
+            if self.voice_output:
+                self.tts_service.reset()
+                self.tts_service.speak("Voice mode on.")
+            return True
 
-        if intent in ("read_file", "write_file"):
-            return self._handle_file_operation(command_text, intent, query)
-
-        if intent == "scrape":
-            return self._handle_web_scraping(command_text, query)
+        language = unexpected_language(command_text, ALLOWED_LANGUAGES)
+        if language:
+            logger.info(f"🌐 Transcript looks like {language}: {command_text!r}")
+            self._pending_foreign_text = command_text
+            self._say(
+                f"That sounded like {language}. Did you mean to speak {language}?"
+            )
+            self._awaiting_reply = True
+            return True
 
         return self._dispatch_command(command_text)
 
-    def _dispatch_command(self, command_text, system_message=None, memory_context=None):
+    def _dispatch_command(self, command_text):
         # Retrieved memories and tool results go out with this request only; the
         # history keeps just the exchange, so old tool output isn't resent every turn.
         self.auto_summarize_context()
 
+        # The prompt's start (system prompt, style, tools, history) stays
+        # identical between turns so servers can reuse their prompt cache instead
+        # of re-reading thousands of tokens. What changes every
+        # turn (time, recalled memories) rides on the new user message instead.
         user_message = {"role": "user", "content": command_text}
-        request = list(self.conversation_history)
-        for extra in (self.get_relevant_context(command_text), system_message):
-            if extra:
-                request.append({"role": "system", "content": extra})
-        request.append(user_message)
+        now = datetime.now().astimezone()
+        notes = [f"Current date and time: {now:%A %d %B %Y, %H:%M %Z (UTC%z)}"]
+        # The prompt rule alone isn't enough: after a Romanian exchange, models
+        # kept answering English questions in Romanian.
+        language = spoken_language(command_text)
+        if language:
+            notes.append(f"Reply in {language}.")
+        relevant_context = self.get_relevant_context(command_text)
+        if relevant_context:
+            notes.append(relevant_context)
+        request = list(self.conversation_history) + [
+            {
+                "role": "system",
+                "content": VOICE_STYLE if self.voice_output else TEXT_STYLE,
+            },
+            {
+                "role": "user",
+                "content": "[Context for this request, not said by the user]\n"
+                + "\n\n".join(notes)
+                + f"\n\n[The user said]\n{command_text}",
+            },
+        ]
 
         print("🔥 Alfred: ", end="", flush=True)
         self.tts_service.reset()
 
-        def on_sentence(sentence):
-            print(sentence, end=" ", flush=True)
-            if not self.tts_service.interrupted:
-                self.tts_service.speak(sentence)
-
-        full_response = self.llm_service.get_completion_streaming(
-            request, on_sentence=on_sentence
+        # Voice mode streams sentence by sentence so speech starts early. Text
+        # mode prints the finished answer: the sentence splitter drops the line
+        # breaks that markdown lists and code blocks depend on.
+        first_sentence_op = performance_monitor.start_operation(
+            "time_to_first_sentence"
         )
-        print()
 
-        if full_response:
+        spoken = []
+
+        def on_sentence(sentence):
+            nonlocal first_sentence_op
+            if first_sentence_op:
+                performance_monitor.end_operation(first_sentence_op)
+                first_sentence_op = None
+            if self.voice_output and not self.tts_service.interrupted:
+                print(sentence, end=" ", flush=True)
+                spoken.append(sentence)
+                self.tts_service.say(sentence)
+
+        voice = self.voice_output
+        op_id = performance_monitor.start_operation("agent_turn")
+        result = self.llm_service.run_agent(
+            request,
+            self.tools.schemas(),
+            self.tools.call,
+            on_sentence,
+            max_tokens=LLM_MAX_TOKENS if voice else LLM_MAX_TOKENS_TEXT,
+            reasoning=LLM_REASONING_VOICE if voice else LLM_REASONING_TEXT,
+            cancelled=lambda: self.tts_service.interrupted,
+        )
+        if voice:
+            self.tts_service.wait_until_done()
+        performance_monitor.end_operation(
+            op_id, success=bool(result.text), details={"tools": len(result.tool_calls)}
+        )
+        if first_sentence_op:
+            performance_monitor.end_operation(first_sentence_op, success=False)
+        if voice:
+            print()
+        else:
+            print(result.text)
+
+        # Interrupted with a key press: keep what was said, and listen for
+        # the next request straight away, without the wake word.
+        if voice and self.tts_service.interrupted:
+            if spoken:
+                self.conversation_history += [
+                    user_message,
+                    {"role": "assistant", "content": " ".join(spoken)},
+                ]
+            self._awaiting_reply = True
+            return True
+
+        if not result.completed and not stop_event.is_set():
+            apology = (
+                "Sorry, I couldn't finish that; the language model isn't reachable right now."
+                if result.text
+                else "Sorry, I can't reach the language model right now. Try again in a minute."
+            )
+            print(apology)
+            if self.voice_output:
+                self.tts_service.speak(apology)
+
+        if result.completed and result.text:
+            self._awaiting_reply = result.text.rstrip().endswith("?")
+            logger.info(f"Alfred: {result.text}", extra={"file_only": True})
             self.conversation_history += [
                 user_message,
-                {"role": "assistant", "content": full_response},
+                *map(_trimmed, result.trail),
+                {"role": "assistant", "content": result.text},
             ]
-            self._store_interaction_memory(command_text, full_response, memory_context)
+            self._store_interaction_memory(
+                command_text, result.text, self._tool_context(result.tool_calls)
+            )
 
         return True
 
     @staticmethod
-    def _tool_system_message(label, fields, result, success_summary):
-        lines = [f"{label} result:"]
-        lines += [f"{name}: {value}" for name, value in fields.items()]
-        lines.append(f"Success: {result['success']}")
-        lines.append(
-            success_summary(result)
-            if result["success"]
-            else f"Error: {result['error']}"
-        )
-        return "\n".join(lines)
-
-    def _handle_search_command(self, command_text, query):
-        print(f"🔎 Searching for: {query}")
-
-        op_id = performance_monitor.start_operation("search_command")
-        try:
-            results = self.search_service.search_ranked(query, num_results=10)
-            self._dispatch_command(
-                command_text,
-                system_message=(
-                    self.search_service.format_results(results, query)
-                    if results
-                    else None
-                ),
-                memory_context={"search_performed": True, "search_query": query},
+    def _tool_context(tool_calls) -> Dict:
+        context = {"tools_used": [call.name for call in tool_calls]}
+        searches = [call for call in tool_calls if call.name == "web_search"]
+        if searches:
+            context["search_performed"] = True
+            context["search_query"] = json.loads(searches[-1].arguments or "{}").get(
+                "query", ""
             )
-            performance_monitor.end_operation(op_id, success=True)
-
-        except Exception as e:
-            performance_monitor.end_operation(
-                op_id, success=False, details={"error": str(e)}
-            )
-            print(f"Error in search command: {e}")
-
-        return True
-
-    def _handle_system_command(self, command_text, command):
-        print(f"💻 Executing command: {command}")
-
-        result = self.tool_manager.execute_system_command(command)
-
-        return self._dispatch_command(
-            command_text,
-            system_message=self._tool_system_message(
-                "Command execution",
-                {"Command": command},
-                result,
-                lambda r: f"Output: {r['output']}",
-            ),
-            memory_context={"tool_used": "system_command", "command": command},
-        )
-
-    def _handle_file_operation(self, command_text, intent, query):
-        content = None
-        if intent == "write_file":
-            action = "write"
-            path, _, content = query.partition(" with content ")
-            path = path.strip()
-        else:
-            action = "read"
-            path = query.strip()
-
-        if not path:
-            print("❌ No file path given")
-            return True
-
-        print(f"📁 File operation: {action} on {path}")
-
-        result = self.tool_manager.file_operations(action, path, content)
-
-        def summarize(r):
-            if "content" in r:
-                return f"Content: {_truncate(r['content'], 500)}"
-            if "items" in r:
-                return f"Items found: {len(r['items'])}"
-            return f"Result: {r.get('message', 'Operation completed')}"
-
-        return self._dispatch_command(
-            command_text,
-            system_message=self._tool_system_message(
-                "File operation", {"Action": action, "Path": path}, result, summarize
-            ),
-            memory_context={
-                "tool_used": "file_operation",
-                "action": action,
-                "path": path,
-            },
-        )
-
-    def _handle_web_scraping(self, command_text, query):
-        url, _, extract_type = query.partition(" for ")
-        url = url.strip()
-        extract_type = extract_type.strip() or "text"
-
-        if not url:
-            print("❌ No URL given to scrape")
-            return True
-
-        print(f"🌐 Scraping {url} for {extract_type}")
-
-        result = self.tool_manager.web_scraping(url, extract_type)
-
-        def summarize(r):
-            if "text" in r:
-                return f"Text content: {_truncate(r['text'], 1000)}"
-            if "links" in r:
-                return f"Found {len(r['links'])} links"
-            if "images" in r:
-                return f"Found {len(r['images'])} images"
-            return "Content extracted successfully"
-
-        return self._dispatch_command(
-            command_text,
-            system_message=self._tool_system_message(
-                "Web scraping",
-                {"URL": url, "Extract type": extract_type},
-                result,
-                summarize,
-            ),
-            memory_context={
-                "tool_used": "web_scraping",
-                "url": url,
-                "extract_type": extract_type,
-            },
-        )
+        return context
 
     def auto_summarize_context(self) -> bool:
         try:
@@ -324,16 +408,25 @@ class ConversationHandler:
             other_messages = [
                 m for m in self.conversation_history if m["role"] != "system"
             ]
-            recent_messages = other_messages[-RECENT_MESSAGES_KEPT:]
-            older_messages = other_messages[:-RECENT_MESSAGES_KEPT]
+            # Cut at a user message: a tool result separated from its call is
+            # rejected by the API.
+            cut = max(len(other_messages) - RECENT_MESSAGES_KEPT, 0)
+            while cut > 0 and other_messages[cut]["role"] != "user":
+                cut -= 1
+            recent_messages = other_messages[cut:]
+            older_messages = other_messages[:cut]
 
             if not older_messages:
                 return False
 
-            print("🧠 Context approaching limit, summarizing older conversations...")
+            logger.info(
+                "🧠 Context approaching limit, summarizing older conversations..."
+            )
 
             conversation = "\n".join(
-                f"{m['role'].title()}: {m['content']}" for m in older_messages
+                f"{m['role'].title()}: {m['content']}"
+                for m in older_messages
+                if m["content"]
             )
             summary = self.llm_service.get_completion(
                 [
@@ -363,80 +456,45 @@ class ConversationHandler:
                 context={"original_messages_count": len(older_messages)},
             )
 
-            print(f"✅ Summarized {len(older_messages)} older messages")
+            logger.info(f"✅ Summarized {len(older_messages)} older messages")
             return True
 
         except Exception as e:
-            print(f"Error during context summarization: {e}")
+            logger.error(f"Error during context summarization: {e}")
             return False
 
     def get_relevant_context(self, query: str) -> str:
         try:
-            if len(query.split()) < 2:
-                return ""
-
-            context_parts = [
-                f"Previous: {m['memory'].user_input[:100]} -> "
-                f"{m['memory'].assistant_response[:150]}"
-                for m in self.semantic_memory_search(query, limit=2)
-                if m["relevance_score"] > 0.3
-            ]
-
-            return "Context: " + " | ".join(context_parts) if context_parts else ""
-
-        except Exception as e:
-            print(f"Error getting relevant context: {e}")
-            return ""
-
-    def semantic_memory_search(
-        self, query: str, limit: int = 5
-    ) -> List[Dict[str, Any]]:
-        try:
-            cache_key = f"{query}_{limit}"
-            current_time = time.time()
-
-            cached = self._memory_search_cache.get(cache_key)
-            if cached and current_time - cached["time"] < MEMORY_SEARCH_CACHE_SECONDS:
-                return cached["results"]
-
-            query_words = set(query.lower().split())
-            if not query_words:
-                return []
-
-            scored = []
-            for memory in self.memory_manager.recall_episodic_memories(limit=20):
-                words = {w.lower() for w in memory.content.split()[:50]}
-                words |= {w.lower() for w in memory.user_input.split()[:20]}
-
-                overlap = len(query_words & words)
-                if overlap:
-                    scored.append(
-                        {
-                            "memory": memory,
-                            "relevance_score": overlap / len(query_words),
-                            "word_overlap": overlap,
-                        }
-                    )
-
-            scored.sort(key=lambda x: x["relevance_score"], reverse=True)
-            results = scored[:limit]
-
-            if len(self._memory_search_cache) > MEMORY_SEARCH_CACHE_SIZE:
-                oldest_key = min(
-                    self._memory_search_cache,
-                    key=lambda k: self._memory_search_cache[k]["time"],
-                )
-                del self._memory_search_cache[oldest_key]
-            self._memory_search_cache[cache_key] = {
-                "time": current_time,
-                "results": results,
+            # Exchanges already in this conversation are skipped: recalled as an
+            # "earlier question", the model answered the previous turn again
+            # instead of the new one ("Okay." got the mayor answer repeated).
+            in_conversation = {
+                m["content"] for m in self.conversation_history if m["role"] == "user"
             }
-
-            return results
+            facts, topics = [], []
+            for memory, _ in self.memory_manager.search_memories(query, limit=3):
+                if memory.event_type == FACT_EVENT:
+                    facts.append(f"- {memory.content}")
+                elif memory.user_input not in in_conversation:
+                    topics.append(f"- {memory.user_input[:120]}")
+            # Only the user's past questions, never Alfred's past answers: fed
+            # back automatically, a wrong answer was repeated verbatim instead
+            # of searching, reinforcing itself on every turn.
+            sections = []
+            if facts:
+                sections.append(
+                    "Facts the user asked you to remember:\n" + "\n".join(facts)
+                )
+            if topics:
+                sections.append(
+                    "The user asked about related things before (use recall for "
+                    "details):\n" + "\n".join(topics)
+                )
+            return "\n\n".join(sections)
 
         except Exception as e:
-            print(f"Error during semantic memory search: {e}")
-            return []
+            logger.error(f"Error getting relevant context: {e}")
+            return ""
 
     def _store_interaction_memory(
         self, user_input: str, assistant_response: str, context: Dict = None
@@ -463,4 +521,4 @@ class ConversationHandler:
             self.memory_manager.user_preference_learning(interaction_data)
 
         except Exception as e:
-            print(f"Error storing interaction memory: {e}")
+            logger.error(f"Error storing interaction memory: {e}")

@@ -1,18 +1,17 @@
 # AlfreD
 
-A voice-activated AI assistant that runs locally on your machine. Say **"Alfred"**, ask a question, and it answers out loud — with web search, file access, web scraping, and a memory of past conversations.
+A voice assistant for your desktop. Say **"Alfred"**, ask for something in plain English or Romanian, and it answers out loud: searching the web, reading your email and calendar, checking GitHub, setting timers, running commands and remembering what you tell it.
 
-Speech recognition runs locally (Whisper). The language model runs on Groq. Text-to-speech uses Microsoft Edge voices and auto-detects the language you're speaking.
+Listening runs locally: speech recognition (Parakeet or Whisper), voice-activity detection and end-of-turn detection. The language model runs locally through llama.cpp by default, with Groq models as fallbacks (or the other way round; see `LLM_CHAIN`). Speech is Kokoro (local) for English and Microsoft Edge voices for other languages.
 
 ---
 
 ## Requirements
 
-- **Python 3.12** (3.8+ works, 3.12 is what this is developed against)
+- **Python 3.12** with an **NVIDIA GPU** recommended (runs on CPU, slowly)
 - A **microphone**
-- An **internet connection** (for the LLM, search, and TTS)
-- A **Groq API key** — free at [console.groq.com](https://console.groq.com)
-- *Optional:* an NVIDIA GPU for much faster transcription
+- A **Groq API key**: free at [console.groq.com](https://console.groq.com)
+- *Optional:* [Git for Windows](https://git-scm.com/) (bash commands), the [GitHub CLI](https://cli.github.com/) (GitHub tools), a Google Cloud OAuth client (Gmail and Calendar), a [llama.cpp](https://github.com/ggml-org/llama.cpp/releases) CUDA build (local model)
 
 ---
 
@@ -24,245 +23,174 @@ Speech recognition runs locally (Whisper). The language model runs on Groq. Text
 pip install -r requirements.txt
 ```
 
-### 2. Install PyTorch for your hardware
-
-The `torch` in `requirements.txt` is **CPU-only on Windows**. Transcription will work but is noticeably slower.
-
-**NVIDIA GPU (Windows/Linux)** — install the CUDA build instead:
+`requirements.txt` pulls the **CPU** build of PyTorch on Windows. With an NVIDIA GPU, install the CUDA build instead:
 
 ```bash
-pip install torch --index-url https://download.pytorch.org/whl/cu121
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
 ```
 
-**Apple Silicon** — the default wheel already includes MPS support; nothing extra to do.
+AlfreD picks the device automatically and prints it at startup (`🔧 Using device: cuda`).
 
-AlfreD picks the best available device automatically and prints which one it chose at startup:
+### 2. Configure
 
+Copy `.env.example` to `.env` and fill in `GROQ_API_KEY`. Every other setting (models, voices, timings, storage folders) lives in `.env` too; see [Configuration](#configuration).
+
+`.env` is gitignored. Never commit it.
+
+### 3. Optional integrations
+
+**Gmail and Google Calendar.** In Google Cloud Console, enable the Gmail and Calendar APIs, create an OAuth client of type *Desktop app*, and save its JSON as `google_credentials.json` in `SECRETS_DIR`. Then sign in once:
+
+```bash
+python google_tools.py
 ```
-🔧 Using device: cuda
-```
 
-### 3. Add your API key
+Gmail access is read-only; Calendar can list and add events. While your Google app is in *Testing* mode, Google expires the sign-in after 7 days; run the command again, or publish the app.
 
-Create a file called **`.env.txt`** in the project root:
+**GitHub.** Sign in to the GitHub CLI once (`gh auth login`). AlfreD uses that login, read-only.
 
-```
-GROQ_API_KEY=gsk_your_key_here
-```
-
-That's the only key required. This file is gitignored — don't commit it.
+**Local model (default; Groq models are the fallback).** Download a [llama.cpp](https://github.com/ggml-org/llama.cpp/releases) CUDA build and a GGUF model (currently `Qwythos-9B-Claude-Mythos-5-1M-MTP-Q5_K_M.gguf` from `empero-ai/Qwythos-9B-Claude-Mythos-5-1M-GGUF`). Set `LLAMACPP_SERVER` to `llama-server.exe`, `LLAMACPP_MODEL` to the `.gguf` file, and list `llamacpp:<any name>` in `LLM_CHAIN`. AlfreD starts the server at startup, keeps the model in GPU memory, and stops it on exit.
 
 ### 4. First run
 
-The first launch downloads the Whisper model (~1.5 GB) and the voice-activity model. This happens once; later starts are fast.
+The first launch downloads the speech, voice-activity, end-of-turn, voice and embedding models (a few GB, into `MODELS_DIR`). Later starts take about 30 seconds.
 
 ---
 
 ## Running
 
-**System tray (recommended)**
-
 ```bash
-python alfred_tray.py
+python alfred_tray.py      # system tray icon with Start / Stop / Quit
+python AlfreD_v2.py        # console; Ctrl+C or say "exit" to quit
 ```
-
-Adds an icon to your system tray with **Start Alfred** / **Stop Alfred** / **Quit**. AlfreD only listens while started, so you can leave the tray app running all day.
-
-**Console**
-
-```bash
-python AlfreD_v1.py
-```
-
-Starts listening immediately. `Ctrl+C` to quit.
 
 ---
 
 ## Talking to AlfreD
 
-It's always a **two-step** exchange:
-
-1. Say **"Alfred"** — it listens in 1.5-second windows for the wake word
-2. Wait for `✅ Wake word detected!`, then speak your command
-
-It records until you **stop talking** (up to 20 seconds), so just speak naturally and pause when you're done. No need to rush.
+1. Say **"Alfred"**. It listens in 1.5-second windows and ignores silence.
+2. After `✅ Wake word detected!`, just talk. It notices when you've finished a sentence (Smart Turn) and waits if you pause mid-thought.
 
 ```
-Listening for your calling, master...
-Heard: "Alfred"
+Heard: "Alfred."
 ✅ Wake word detected! Listening for command...
-Command heard: "what is the capital of France"
-🔥 Alfred: The capital of France is Paris.
+Command heard: "Set a timer for ten minutes for the pasta."
+🔥 Alfred: Done, a ten-minute pasta timer is running.
 ```
 
-**To interrupt AlfreD mid-sentence, press any key.** Speech stops immediately.
+There are no fixed phrases: ask naturally and the model picks the right tool. Some things to try:
 
----
-
-## Commands
-
-You don't need exact phrasing — each capability has several trigger phrases, and close matches are accepted (helpful when speech recognition mishears you). Anything that doesn't match a trigger is treated as normal conversation.
-
-### Just talk
-
-Ask anything. AlfreD remembers the conversation, so follow-ups work naturally.
-
-> "Alfred, explain how a jet engine works"
-> "Alfred, tell me more about that"
-
-### Search the web
-
-Say: `search for` · `look up` · `find me` · `google` · `search` · `look for` · `what is` · `who is` · `tell me about` · `find out`
-
-> "Alfred, search for the best hiking boots"
-> "Alfred, what is quantum entanglement"
-
-Results are cached for an hour, so repeating a search is instant and free.
-
-### Run a system command
-
-Say: `run command` · `execute` · `terminal` · `shell command`
-
-> "Alfred, run command git status"
-> "Alfred, execute ls -la | head"
-
-Commands run through **bash**, so pipes, `&&` and Unix tools work. On Windows this is Git Bash, found automatically from your Git for Windows install; without it, system commands report an error. Runs in safe mode — see [Safety](#safety) below.
-
-### Read a file
-
-Say: `read file` · `open file` · `show file` · `read the file` · `what's in file`
-
-> "Alfred, read file config.py"
-
-### Write a file
-
-Say: `write file` · `save file` · `create file` · `write to file` — then **`with content`**
-
-> "Alfred, write file notes.txt with content remember to buy milk"
-
-The words *"with content"* are what separate the path from the text.
-
-### Scrape a web page
-
-Say: `scrape` · `web scrape` · `get the page` · `fetch the page` · `grab the page`
-
-Add **`for <type>`** to choose what to extract — `text` (default), `links`, `images`, `metadata`, or `all`.
-
-> "Alfred, scrape https://example.com"
-> "Alfred, web scrape https://example.com for links"
-
-### Housekeeping
-
-| What you want | Say |
+| Ask | What happens |
 |---|---|
-| See the command reference | `show commands` · `what can you do` |
-| Forget the conversation so far | `clear context` · `start fresh` · `forget everything` · `new conversation` |
-| See timing statistics | `performance stats` · `show stats` · `performance` |
-| Shut AlfreD down | `close script` · `shut down` · `goodbye` · `turn off` · `exit` · `quit` |
+| "What's the weather in Cluj this weekend?" | Web search |
+| "Do I have any unread emails?" · "What's on my calendar tomorrow?" | Gmail / Calendar |
+| "Add dentist on Friday at three" | Creates a calendar event |
+| "Any GitHub notifications?" | GitHub |
+| "Set a timer for five minutes" · "Cancel the pasta timer" | Timers, announced when they finish |
+| "Remember that I'm 33" · "What do you know about me?" | Long-term memory |
+| "Run git status in bash" · "Read config.py" | Commands and files (safe mode) |
+| "Open alfred tray" · "Open the budget spreadsheet" | Opens a file or folder in its default program; asks which one if several match |
+| "Switch to text mode" | Full answers on screen instead of short spoken ones |
+
+**Short spoken answers.** In voice mode Alfred answers in two or three sentences and asks *"Want more?"* when there is more. Say "yes" or "no" without saying "Alfred" again. In **text mode** the full answer is printed and nothing is spoken.
+
+**Other languages.** Speak English or Romanian (`ALLOWED_LANGUAGES`) and Alfred replies in the same language. If a transcript comes out in another language, Alfred asks whether you meant to speak it.
+
+**Interrupting:** press any key while Alfred is answering. It stops talking, cancels anything it hadn't started yet, and listens for your next request without the wake word.
+
+### Instant commands
+
+These are handled without the language model, and only when they are the whole sentence:
+
+| Say | Does |
+|---|---|
+| `exit` · `quit` · `goodbye` · `shut down` | Shuts AlfreD down |
+| `clear context` · `start fresh` · `new conversation` | Forgets the current conversation (long-term memory stays) |
+| `text mode` · `voice mode` | Switches output mode |
+| `show commands` · `what can you do` | Prints the command reference |
+| `performance stats` | Prints timing statistics |
+| `no` · `nope` · `that's all` (after a question) | Ends the exchange |
 
 ---
 
 ## Memory
 
-AlfreD keeps two kinds of memory, both stored locally in `memory_data/`:
+Stored locally in `memory_data/`:
 
-- **Conversation memory** — past exchanges in a SQLite database. Relevant ones are pulled back in automatically when they relate to what you're asking.
-- **Preferences** — it notices patterns over time (whether you prefer brief or detailed answers, which topics you return to, how formally you speak) and adapts.
+- **Conversation memory:** your past questions, searchable by meaning in any language, so related topics are brought back automatically. Alfred's past answers are never reused, so a wrong answer can't repeat itself.
+- **Saved facts:** only things you explicitly ask it to remember. "Forget that…" deletes one.
+- **Preferences:** patterns it notices, such as brief vs. detailed answers.
 
-When a conversation gets long, older messages are automatically summarized so context isn't lost but stays within the model's limit. Say `clear context` to wipe the current conversation; delete the `memory_data/` folder to erase everything permanently.
+Long conversations are summarised automatically. Delete `memory_data/` to erase everything.
 
 ---
 
 ## Configuration
 
-Edit `config.py`:
+All settings are in `.env` (see `.env.example` for the full list with comments). The main ones:
 
 | Setting | Default | What it does |
 |---|---|---|
-| `WAKE_WORD` | `"Alfred"` | The word that wakes it up |
-| `WAKE_WORD_DURATION` | `1.5` | Seconds per wake-word listening window |
-| `TEMPERATURE` | `0.3` | Response creativity — higher is more varied |
-| `SAMPLE_RATE` | `16000` | Microphone sample rate (Whisper expects 16 kHz) |
-| `WHISPER_MODEL_ID` | `distil-whisper/distil-large-v3.5` | Speech recognition model |
-
-**Voice** — set in `AlfreD_v1.py`:
-
-```python
-tts_service = TTSService(default_voice="en-GB-RyanNeural")
-```
-
-AlfreD detects the language of each sentence and switches voices automatically (17 languages supported — see `VOICE_MAP` in `tts_service.py`). The default voice is used when detection is uncertain.
-
-**Models** — set in `llm_service.py`. Primary is `openai/gpt-oss-120b`, falling back to `llama-3.3-70b-versatile` if it fails or is rate-limited.
-
-**Recording sensitivity** — `record_until_silence()` in `audio_processor.py` takes `max_duration` (default 20s) and `silence_threshold` (default 2.0s of quiet before it stops). Raise the threshold if it cuts you off while you're thinking.
+| `STT_MODEL` | `nvidia/parakeet-tdt-0.6b-v3` | Speech recognition. `distil-whisper/distil-large-v3.5` is English-only |
+| `ALLOWED_LANGUAGES` | `en,ro` | Languages you speak |
+| `SMART_TURN` | `true` | End your turn when you sound finished, not after a fixed silence |
+| `SILENCE_SECONDS` | `2.0` | Fallback end-of-turn silence |
+| `TTS_ENGINE` / `KOKORO_VOICE` / `KOKORO_DEVICE` | `kokoro` / `bm_george` / `cuda` | Local voice for English; other languages use Edge voices |
+| `TTS_VOICE` | `en-GB-RyanNeural` | Edge voice used when Kokoro isn't |
+| `VOICE_OUTPUT` | `true` | Start in voice mode (`false` = text mode) |
+| `LLM_CHAIN` | `llamacpp:qwythos-9b,groq:openai/gpt-oss-120b,groq:qwen/qwen3.8-27b` | Models tried in order; the next is used when one is rate-limited or fails |
+| `LLAMACPP_SERVER` / `LLAMACPP_MODEL` / `LLAMACPP_ARGS` | — | llama.cpp server AlfreD starts for a `llamacpp:` model |
+| `LLM_REASONING_VOICE` / `LLM_REASONING_TEXT` | `low` / `medium` | Thinking before answering, per mode. Qwen can only think or not: below `medium` means off |
+| `MODELS_DIR` / `SECRETS_DIR` | — | Where downloaded models and the Google sign-in are kept |
+| `FILE_SEARCH_DIRS` | Desktop; Documents; Downloads; AlfreD folder | Folders searched for "open <file>", separated by `;` |
 
 ---
 
 ## Safety
 
-System commands and file operations run in **safe mode** by default:
-
-- Destructive commands are blocked (`rm`, `del`, `format`, `mkfs`, `shutdown`, `reboot`, `fdisk`, `chmod 777`, …)
-- Unix system directories are off limits for file operations (`/etc`, `/sys`, `/proc`, `/dev`, `/boot`, `/root`). Windows paths are not restricted
-- Commands time out after 30 seconds
-- Scraping is restricted to `http`/`https` and blocks localhost and loopback addresses
-
-Safe mode is set where the tool manager is constructed in `conversation_handler.py`:
-
-```python
-self.tool_manager = ToolManager(safe_mode=True)
-```
-
-Turning it off removes every check above. Don't, unless you have a specific reason.
-
----
-
-## Files AlfreD creates
-
-| Path | Contents | Safe to delete? |
-|---|---|---|
-| `memory_data/memory.db` | Conversation history | Yes — erases memory |
-| `memory_data/user_preferences.json` | Learned preferences | Yes — resets learning |
-| `search_cache/` | Cached search results (1 hour) | Yes |
-
-All three are gitignored.
+Commands and file operations run in **safe mode**: destructive commands (`rm`, `del`, `format`, `shutdown`, …) are blocked, Unix system directories are off limits, and commands time out after 30 seconds. Windows paths are not restricted. Scraping allows only `http`/`https` and blocks localhost. Gmail is read-only, and calendar events are only created when you ask for one.
 
 ---
 
 ## Troubleshooting
 
-**It never hears the wake word.** Check your default input device and that the mic isn't muted. `Heard: "..."` prints whatever it transcribed each cycle — if that's empty or garbage, it's an input problem, not a recognition one. A quiet mic transcribes to nothing.
+**It never hears the wake word.** Check the input device. `Heard: "..."` shows each transcription; silence is skipped entirely, so no line means it heard nothing.
 
-**Transcription is slow.** You're likely on CPU. Check the `🔧 Using device:` line at startup; if it says `cpu` and you have an NVIDIA card, install the CUDA build of torch (see [Setup](#2-install-pytorch-for-your-hardware)).
+**It cuts me off, or waits too long.** Raise or lower `SMART_TURN_THRESHOLD` (0.5), or set `SMART_TURN=false` to use the fixed `SILENCE_SECONDS`.
 
-**It cuts me off mid-sentence.** Raise `silence_threshold` in `record_until_silence()`.
+**"I can't reach the language model right now."** Every model in the chain was rate-limited or unreachable. Groq's free tier has tight per-minute limits, and a local model in `LLM_CHAIN` removes the problem. If the local model fails, check `logs/alfred.log` for llama-server errors.
 
-**"I'm having trouble with the model."** Both the primary and fallback model failed — usually a missing/invalid `GROQ_API_KEY` or a rate limit. The console shows the underlying error.
+**It mishears place names.** Tell it once ("Remember that I live in Cluj-Napoca") and the model will resolve close-sounding transcriptions.
 
-**No sound.** Edge TTS needs internet. Very short or symbol-only replies are skipped deliberately.
-
-**It misroutes what I say.** Trigger phrases win over conversation, so "what is..." is always treated as a search. Phrase it differently if you want a plain answer — or edit `INTENT_TRIGGERS` in `intent_detector.py`.
+Logs, including each spoken answer, are in `logs/alfred.log`.
 
 ---
 
 ## Project layout
 
 ```
-AlfreD_v1.py            Entry point and main loop
+AlfreD_v2.py            Entry point and main loop
 alfred_tray.py          System tray wrapper
-config.py               Settings and API keys
+config.py               Settings, loaded from .env
 
-audio_processor.py      Recording, voice-activity detection, Whisper
-conversation_handler.py Command routing and conversation flow
-intent_detector.py      Maps spoken phrases to capabilities
-llm_service.py          Groq client, streaming, model fallback
-tts_service.py          Speech output and language detection
+audio_processor.py      Recording, voice activity (Silero), speech recognition
+smart_turn.py           End-of-turn detection
+conversation_handler.py Conversation flow, voice/text modes, follow-ups
+intent_detector.py      Instant control commands
+language_guard.py       Flags transcripts in unexpected languages
+llm_service.py          Model chain, streaming, tool-calling loop
+tts_service.py          Speech output (Kokoro / Edge), pipelined
 
+tools.py                Tool registry + core tools (search, commands, files, timers, memory)
+file_opener.py          Finds a file by its spoken name and opens it
+github_tools.py         GitHub tools (gh CLI)
+google_tools.py         Gmail and Calendar tools
+timers.py               Countdown timers
 search_service.py       Web search with caching
-tool_manager.py         Commands, files, scraping (with safety checks)
-memory_manager.py       Conversation memory and preference learning
+tool_manager.py         Commands, files, scraping (safe mode)
+memory_manager.py       Memory, saved facts, preferences
+embeddings.py           Meaning vectors for memory search
 performance_monitor.py  Operation timing
 commands.py             Command reference text
-utils.py                Temp file cleanup
+utils.py                Logging setup, stop signal, temp cleanup
 ```
