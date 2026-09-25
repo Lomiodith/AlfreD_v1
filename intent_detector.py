@@ -18,20 +18,21 @@ INTENT_TRIGGERS = {
         "forget everything",
         "new conversation",
     ],
-    # Mostly the answer to "Want more?"; needs no LLM round trip.
-    "decline": [
-        "no",
-        "nope",
-        "no thanks",
+    # Both end the conversation (Alfred stops listening without the wake word)
+    # with no LLM round trip. They differ only while Alfred's language question
+    # is pending: "no" answers it (say it again), "stop" still ends everything.
+    "decline": ["no", "nope", "no thanks", "nu"],
+    "stop": [
+        "stop",
         "that's all",
         "that's it",
         "i'm good",
         "nothing else",
-        "stop",
-        "nu",
+        "enough",
+        "gata",
     ],
     # Only meaningful while Alfred awaits a yes/no of its own (the language
-    # check); otherwise "yes" goes to the LLM, e.g. as the answer to "Want more?".
+    # check); otherwise "yes" goes to the LLM, e.g. as the answer to its follow-up question.
     "affirm": [
         "yes",
         "yeah",
@@ -64,9 +65,30 @@ FILLER_WORDS = {
 }
 NON_WORD = re.compile(r"[^\w\s']")
 
+# A reply made only of these, with at least one of NO_WORDS or STOP_WORDS, is a
+# decline or stop too: the whole-utterance rule sent "No, I said okay, stop." to
+# the LLM, which went on. "Don't stop" or "stop the timer" still reach the LLM.
+NO_WORDS = {"no", "nope", "nu"}
+STOP_WORDS = {"stop", "enough", "gata", "destul"}
+# "ai", "ay", "sed": "I said" as Parakeet spells it in Cyrillic ("ай сэд").
+STOP_GLUE = {"i", "said", "just", "it", "that's", "all", "alright", "right"}
+STOP_GLUE |= {"ai", "ay", "sed"}
+
+# Parakeet guesses the language per utterance and writes a lone "stop" as
+# "Стоп." Only English and Romanian are expected, so Cyrillic is misheard
+# English: read it as Latin letters for command matching (the language guard
+# still sees the original).
+CYRILLIC = str.maketrans(
+    {
+        **dict(zip("абвгдезийклмнопрстуфхыэ", "abvgdeziiklmnoprstufhye")),
+        **{"ё": "e", "ж": "zh", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sht"},
+        **{"ю": "yu", "я": "ya", "ъ": "", "ь": ""},
+    }
+)
+
 
 def _core(text: str) -> str:
-    words = NON_WORD.sub(" ", text.lower()).split()
+    words = NON_WORD.sub(" ", text.lower().translate(CYRILLIC)).split()
     return " ".join(w for w in words if w not in FILLER_WORDS)
 
 
@@ -86,6 +108,12 @@ class IntentDetector:
         core = _core(text)
         if core in self.exact:
             return self.exact[core]
+        words = set(core.split())
+        if (
+            words & (NO_WORDS | STOP_WORDS)
+            and words <= NO_WORDS | STOP_WORDS | STOP_GLUE
+        ):
+            return "stop" if words & STOP_WORDS else "decline"
 
         # Absorbs speech-to-text errors ("shut dawn").
         best_intent, best_score = "general", 0.0

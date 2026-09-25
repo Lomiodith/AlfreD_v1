@@ -67,6 +67,11 @@ class AudioProcessor:
             warnings.filterwarnings("ignore", category=category)
         for message in SUPPRESSED_WARNINGS:
             warnings.filterwarnings("ignore", message=f".*{message}.*")
+        # Logged (not warned) after 10 pipeline calls: batching advice for bulk
+        # jobs, meaningless when utterances arrive one at a time.
+        logging.getLogger("transformers.pipelines.base").addFilter(
+            lambda record: "pipelines sequentially" not in record.getMessage()
+        )
 
     def _load_stt(self):
         """Any Hugging Face speech-recognition model: Whisper, or Parakeet
@@ -77,6 +82,10 @@ class AudioProcessor:
                 "automatic-speech-recognition",
                 model=STT_MODEL,
                 device=self.device,
+                # Half precision halves Parakeet's 2.4 GB on the GPU, which it
+                # shares with the local LLM; over 12 GB, Windows spills into RAM
+                # and llama-server crawls at under a token per second.
+                dtype=torch.float16 if self.device == "cuda" else torch.float32,
                 model_kwargs={"cache_dir": HF_CACHE_DIR},
             )
             logger.info(f"✅ Speech model loaded on {self.device}")
@@ -198,6 +207,11 @@ class AudioProcessor:
         except Exception as e:
             logger.error(f"❌ Transcription error: {e}")
             return ""
+        finally:
+            # PyTorch keeps freed GPU memory reserved for reuse; a 20 s command
+            # grows that reserve, and llama-server needs the room.
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
 
     @staticmethod
     def create_temp_audio_file():

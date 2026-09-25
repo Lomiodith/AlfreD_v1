@@ -123,7 +123,9 @@ def test_reasoning_level_per_model(service, model, provider, level, expected):
     assert service._reasoning_kwargs(model, level) == {"reasoning_effort": expected}
 
 
-@pytest.mark.parametrize("level, think", [("low", False), ("medium", True)])
+@pytest.mark.parametrize(
+    "level, think", [("none", False), ("low", True), ("medium", True)]
+)
 def test_llamacpp_thinking_switch(service, level, think):
     service._provider = {"qwythos-9b": "llamacpp"}
 
@@ -182,3 +184,35 @@ def test_cancelling_stops_before_the_requested_tool_runs(service):
     assert executed == []
     assert result.text == "Let me check."
     assert service._cancelled() is False
+
+
+def _streamed(*pieces):
+    from types import SimpleNamespace
+
+    return [
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(delta=SimpleNamespace(content=piece, tool_calls=None))
+            ]
+        )
+        for piece in pieces
+    ]
+
+
+def test_inline_thinking_is_never_spoken_or_kept(service):
+    service._create = lambda *args, **kwargs: iter(
+        _streamed(
+            "<thi",
+            "nk>The user said yes. I should",
+            " continue.</thi",
+            "nk>\n\nRain after eight. ",
+            "Sunset at seven.",
+        )
+    )
+    spoken = []
+
+    text, calls = service._stream_step([], "qwen", spoken.append)
+
+    assert spoken == ["Rain after eight.", "Sunset at seven."]
+    assert text == "Rain after eight. Sunset at seven."
+    assert calls == []

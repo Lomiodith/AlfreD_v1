@@ -54,7 +54,8 @@ MAX_RECORDING_SECONDS = _float("MAX_RECORDING_SECONDS", 20)
 SMART_TURN = _bool("SMART_TURN", False)
 SMART_TURN_PAUSE_SECONDS = _float("SMART_TURN_PAUSE_SECONDS", 0.5)
 SMART_TURN_THRESHOLD = _float("SMART_TURN_THRESHOLD", 0.5)
-# After Alfred asks a question, how long to wait for a reply without the wake word.
+# After each answer, how long to wait for the next request without the wake word
+# (silence this long ends the conversation).
 FOLLOW_UP_SECONDS = _float("FOLLOW_UP_SECONDS", 5)
 STT_MODEL = _str("STT_MODEL", "distil-whisper/distil-large-v3.5")
 # Languages you speak (ISO codes). A transcript that seems to be in another one
@@ -78,12 +79,13 @@ LLAMACPP_SERVER = _str("LLAMACPP_SERVER", "")
 LLAMACPP_MODEL = _str("LLAMACPP_MODEL", "")
 LLAMACPP_ARGS = _str(
     "LLAMACPP_ARGS",
-    "-ngl 999 -c 16384 --parallel 1 -fa on -ctk q8_0 -ctv q8_0 -t 8 -b 2048 -ub 2048 --spec-type draft-mtp --spec-draft-n-max 6",
+    "-ngl 999 -c 16384 --parallel 1 -fa on -ctk q8_0 -ctv q8_0 -t 8 -b 2048 -ub 2048 --spec-type draft-mtp --spec-draft-n-max 3 --reasoning-budget 512",
 ).split()
 LLM_TEMPERATURE = _float("LLM_TEMPERATURE", 0.3)
-# How much models think before answering, per output mode: low / medium / high.
-# gpt-oss honours the level; Qwen can only think or not, and even its "low"
-# costs 10+ s, so for Qwen anything below medium means no thinking.
+# How much models think before answering, per output mode: none / low / medium
+# / high. gpt-oss honours the level. Qwen on Groq can only think or not, and
+# even its "low" costs 10+ s, so below medium it doesn't. The local llama.cpp
+# model thinks unless "none" (it's brief there, capped by --reasoning-budget).
 LLM_REASONING_VOICE = _str("LLM_REASONING_VOICE", "low")
 LLM_REASONING_TEXT = _str("LLM_REASONING_TEXT", "medium")
 LLM_MAX_TOKENS = _int("LLM_MAX_TOKENS", 1024)
@@ -98,7 +100,7 @@ KOKORO_VOICE = _str("KOKORO_VOICE", "bm_george")
 # cuda: ~0.15 s per sentence for ~0.3 GB of GPU memory. cpu frees that memory
 # but takes ~1.3 s per sentence, slower than edge-tts.
 KOKORO_DEVICE = _str("KOKORO_DEVICE", "cuda")
-# Speak answers (short, "Want more?") or only print them (full length). Toggle
+# Speak answers (short, with a follow-up question) or only print them (full length). Toggle
 # at runtime with "voice mode" / "text mode".
 VOICE_OUTPUT = _bool("VOICE_OUTPUT", True)
 

@@ -92,7 +92,7 @@ There are no fixed phrases: ask naturally and the model picks the right tool. So
 | "Open alfred tray" · "Open the budget spreadsheet" | Opens a file or folder in its default program; asks which one if several match |
 | "Switch to text mode" | Full answers on screen instead of short spoken ones |
 
-**Short spoken answers.** In voice mode Alfred answers in two or three sentences and asks *"Want more?"* when there is more. Say "yes" or "no" without saying "Alfred" again. In **text mode** the full answer is printed and nothing is spoken.
+**Conversations.** In voice mode Alfred answers in two or three sentences and, when the topic has more to it, ends with a follow-up question about it. After every answer it keeps listening for a few seconds (`FOLLOW_UP_SECONDS`), so just keep talking, answer its question or change the topic, without saying "Alfred" again. Say "no", "stop" or "that's all", or stay quiet, to end the conversation. In **text mode** the full answer is printed and nothing is spoken.
 
 **Other languages.** Speak English or Romanian (`ALLOWED_LANGUAGES`) and Alfred replies in the same language. If a transcript comes out in another language, Alfred asks whether you meant to speak it.
 

@@ -24,7 +24,15 @@ def detector():
         ("No.", "decline"),
         ("No, thank you.", "decline"),
         ("Nope", "decline"),
-        ("That's all, thanks.", "decline"),
+        ("That's all, thanks.", "stop"),
+        ("No, I said okay, stop.", "stop"),
+        ("Just stop it.", "stop"),
+        ("Nu, gata.", "stop"),
+        # Parakeet's Cyrillic spellings of English "stop"
+        ("Стоп.", "stop"),
+        ("Но ай сэд стоп.", "stop"),
+        ("No ай сэд стоп.", "stop"),
+        ("Top", "stop"),
         ("Voice mode, please", "voice_on"),
     ],
 )
@@ -46,6 +54,8 @@ def test_control_command_as_whole_utterance(detector, text, intent):
         "the commander said",
         "No, I meant the other city",
         "Stop the pasta timer",
+        "Don't stop",
+        "I said the other one",
     ],
 )
 def test_sentences_containing_triggers_go_to_the_llm(detector, text):

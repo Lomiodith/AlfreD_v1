@@ -21,6 +21,9 @@ from utils import stop_event
 logger = logging.getLogger(__name__)
 
 SENTENCE = re.compile(r"[^.!?\n]*[.!?\n]")
+# llama-server and gpt-oss return thinking separately (reasoning_content), but
+# Groq's Qwen streams it inline in <think> tags; spoken, it would be read out.
+THINKING = re.compile(r"<think>.*?(?:</think>|$)\s*", re.DOTALL)
 MAX_AGENT_STEPS = 5
 PROVIDERS = ("groq", "llamacpp")
 DEFAULT_RETRY_AFTER = 10
@@ -121,10 +124,14 @@ class LLMService:
     def _reasoning_kwargs(self, model, level):
         if "gpt-oss" in model:
             return {"reasoning_effort": level}
-        # Hybrid models (Qwen) only think or don't, and even "low" costs 10+ s.
-        think = level in ("medium", "high")
+        # The local model thinks unless told "none": without it, Qwythos narrated
+        # its reasoning as the answer ("The user said yes, I should…"). It thinks
+        # briefly (~1.5 s), capped by llama-server's --reasoning-budget.
         if self._provider[model] == "llamacpp":
+            think = level != "none"
             return {"extra_body": {"chat_template_kwargs": {"enable_thinking": think}}}
+        # Hybrid Qwen on Groq only thinks or doesn't, and even "low" costs 10+ s.
+        think = level in ("medium", "high")
         return {"reasoning_effort": "default" if think else "none"}
 
     def _halted(self) -> bool:
@@ -286,8 +293,9 @@ class LLMService:
         try:
             stream = self._create(messages, model_name, stream=True, **kwargs)
 
+            raw = ""
             text = ""
-            buffer = ""
+            spoken = 0
             calls = {}
 
             for chunk in stream:
@@ -306,17 +314,20 @@ class LLMService:
 
                 if not delta.content:
                     continue
-                buffer += delta.content
-                text += delta.content
+                raw += delta.content
+                # Re-derived from the whole stream: a tag split across chunks is
+                # only removable once complete, and it holds no sentence end
+                # until then, so none of it is spoken early.
+                text = THINKING.sub("", raw)
 
-                while match := SENTENCE.match(buffer):
-                    buffer = buffer[match.end() :]
+                while match := SENTENCE.match(text, spoken):
+                    spoken = match.end()
                     sentence = match.group().strip()
                     if sentence:
                         on_sentence(sentence)
 
-            if buffer.strip():
-                on_sentence(buffer.strip())
+            if text[spoken:].strip():
+                on_sentence(text[spoken:].strip())
 
             if not text.strip() and not calls:
                 return None

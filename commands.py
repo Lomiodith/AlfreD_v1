@@ -13,7 +13,8 @@ INSTANT_COMMAND_DESCRIPTIONS = {
     "voice_on": "Voice mode: short spoken answers",
     "show_commands": "Show this reference",
     "performance": "Show timing statistics",
-    "decline": "End the exchange after Alfred asks a question",
+    "decline": "No: end the conversation (or, after 'Did you mean…?', say it again)",
+    "stop": "Stop / that's all: end the conversation, whatever Alfred asked",
 }
 
 EXAMPLE_REQUESTS = [
@@ -30,7 +31,7 @@ EXAMPLE_REQUESTS = [
 
 TIPS = [
     "Say 'Alfred', wait for 'Wake word detected', then just talk; it notices when you've finished",
-    "After 'Want more?' answer yes or no without saying 'Alfred' again",
+    "After an answer, just keep talking without saying 'Alfred'; say 'no' or 'that's all' (or stay quiet) to end the conversation",
     "English and Romanian both work; Alfred replies in the language you used",
     "Press any key to interrupt Alfred while it's speaking",
     "Instant commands only trigger when they are the whole sentence",

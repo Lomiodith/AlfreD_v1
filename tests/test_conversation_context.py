@@ -82,7 +82,7 @@ def test_key_press_cuts_the_answer_and_listens_again():
     handler.memory_manager.episodic_memory.assert_not_called()
 
 
-def test_tool_calls_stay_in_the_history_with_trimmed_results():
+def test_tool_results_stay_whole_for_one_turn_then_are_trimmed():
     from llm_service import AgentResult
 
     handler = _handler([])
@@ -107,7 +107,15 @@ def test_tool_calls_stay_in_the_history_with_trimmed_results():
         "assistant",
     ]
     assert history[-3] is call
-    assert len(history[-2]["content"]) == ch.HISTORY_TOOL_RESULT_CHARS + 1
+    # Whole while it's the latest turn, so "Want more?" → "yes" can continue.
+    assert history[-2]["content"] == "x" * 5000
+
+    handler.llm_service.run_agent.return_value = AgentResult("Sure.")
+    handler._dispatch_command("Yes.")
+
+    history = handler.conversation_history
+    assert history[-4]["role"] == "tool"
+    assert len(history[-4]["content"]) == ch.HISTORY_TOOL_RESULT_CHARS + 1
 
 
 def test_summarising_never_separates_a_tool_result_from_its_call():
@@ -125,3 +133,44 @@ def test_summarising_never_separates_a_tool_result_from_its_call():
 
     kept = [m for m in handler.conversation_history if m["role"] != "system"]
     assert kept[0]["role"] == "user"
+
+
+def test_conversation_stays_open_until_declined():
+    from llm_service import AgentResult
+
+    handler = _handler([])
+    handler.voice_output = False
+    handler.llm_service.run_agent.return_value = AgentResult(
+        "Emil Boc is the mayor of Cluj-Napoca."
+    )
+
+    handler._handle_command("Who is the mayor of Cluj?")
+    assert handler._awaiting_reply  # no "?" at the end, yet still listening
+
+    handler._awaiting_reply = False  # as _listen_and_handle does per request
+    handler._handle_command("That's all.")
+    assert not handler._awaiting_reply
+    handler.llm_service.run_agent.assert_called_once()
+
+
+def test_stop_ends_the_conversation_while_a_language_question_is_pending():
+    handler = _handler([])
+    handler.voice_output = False
+    handler._pending_foreign_text = "Здравствуйте."  # "Did you mean Russian?"
+
+    handler._handle_command("Стоп.")
+
+    assert not handler._awaiting_reply
+    assert handler._pending_foreign_text is None
+    handler.llm_service.run_agent.assert_not_called()
+
+
+def test_no_to_the_language_question_asks_to_repeat():
+    handler = _handler([])
+    handler.voice_output = False
+    handler._pending_foreign_text = "Привет, как дела?"
+
+    handler._handle_command("No.")
+
+    assert handler._awaiting_reply
+    handler.llm_service.run_agent.assert_not_called()

@@ -48,7 +48,7 @@ Memory: save with remember only when the user explicitly asks you to remember so
 # mid-conversation takes effect immediately.
 VOICE_STYLE = """Output mode: VOICE. Everything you write is spoken aloud.
 - Keep each reply to two or three short spoken sentences.
-- Only if there is clearly more worth saying, stop and ask "Want more?". If the answer is already complete, don't ask. If the user says yes, continue with the next part, again briefly.
+- This is a conversation, not a lookup. When the topic has more to it, end with one short follow-up question about a specific, interesting angle of it (after "how tall is Everest": "Curious how long it takes to climb it?"). Never a generic "Want more?". If the user says yes, continue with that angle, again briefly. Skip the question after a plain action (a timer, opening a file) or when the user sounds done. If the user changes the topic, follow them.
 - Plain speech only: no markdown, lists, tables, code, URLs or file paths (say just the file or folder name). Summarise tool output (file listings, search results, emails) instead of reading it out; give counts and highlights."""
 
 TEXT_STYLE = """Output mode: TEXT. Your reply is shown on screen, not spoken.
@@ -69,7 +69,9 @@ MAX_CONTEXT_TOKENS = 4000
 RECENT_MESSAGES_KEPT = 10
 # Past tool calls stay in the history so the model keeps seeing that actions
 # take a tool call; without them, a local model answered "I've opened it" with
-# no call at all. Their results are trimmed so old output isn't resent in full.
+# no call at all. Their results are trimmed so old output isn't resent in full,
+# but only once the next turn is stored: the latest turn keeps them whole, so
+# a "yes" to Alfred's follow-up can continue from the rest of the search results.
 HISTORY_TOOL_RESULT_CHARS = 300
 
 
@@ -174,8 +176,8 @@ class ConversationHandler:
     def process_command(self):
         logger.info("✅ Wake word detected! Listening for command...")
         keep_running = self._listen_and_handle()
-        # After Alfred asks something ("Want more?"), take the reply without
-        # requiring the wake word again.
+        # A conversation stays open after each answer: the next request needs
+        # no wake word. It ends on silence or a "no" / "stop" / "that's all".
         while keep_running and self._awaiting_reply and not stop_event.is_set():
             logger.info("👂 Listening for your reply...")
             keep_running = self._listen_and_handle(start_timeout=FOLLOW_UP_SECONDS)
@@ -250,7 +252,7 @@ class ConversationHandler:
             performance_monitor.print_stats()
             return True
 
-        if intent == "decline":
+        if intent in ("decline", "stop"):
             logger.info("👍 Okay, done.")
             return True
 
@@ -373,11 +375,14 @@ class ConversationHandler:
                 self.tts_service.speak(apology)
 
         if result.completed and result.text:
-            self._awaiting_reply = result.text.rstrip().endswith("?")
+            # Not only after a question: waiting just for a "?" ended the
+            # conversation at the first answer that didn't ask one.
+            self._awaiting_reply = True
             logger.info(f"Alfred: {result.text}", extra={"file_only": True})
-            self.conversation_history += [
+            self.conversation_history = [
+                *map(_trimmed, self.conversation_history),
                 user_message,
-                *map(_trimmed, result.trail),
+                *result.trail,
                 {"role": "assistant", "content": result.text},
             ]
             self._store_interaction_memory(
